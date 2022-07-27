@@ -1,0 +1,208 @@
+USE [ADMIN]
+GO
+
+/****** Object:  StoredProcedure [dbo].[p_dba_JobStatus]    Script Date: 11/30/2021 6:05:25 AM ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+  
+CREATE  PROC [dbo].[p_dba_JobStatus]  
+@SendEmail BIT = 0,@ToEmail VARCHAR(50)=''  
+AS  
+/*************************************************************************  
+** Name:p_dba_JobStatus  
+** Desc:p_dba_JobStatus report proc  
+**************************************************************************  
+**History  
+**************************************************************************  
+--@SendEmail  
+Posible Values:   
+    1 = Email send  
+    0 = Email not send  
+    
+@ToEmail:To whom need to send email  
+Posible Values:   
+    APP_ADMIN ,DBA_ADMIN,DBA_TEST  
+      
+-- EXEC Admin..[p_dba_JobStatus] 1,'DBA_INH'  
+  Exec Admin..p_dba_JobStatus_temp 1,'DBA_INH'
+**************************************************************************/  
+ SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED  
+ SET NOCOUNT ON 
+ 
+ DECLARE @P_SERVERNAME VARCHAR(500)
+SELECT @P_SERVERNAME = INFO_VALUE FROM TB_INFO WHERE INFO_KEY = 'SERVERNAME'
+  
+ --DELETING TEMPORARY TABLES INCLUDING ##columns of p_DBA_ConvertTableToHtml  
+ IF  EXISTS (SELECT * FROM tempdb.sys.objects WHERE object_id = OBJECT_ID(N'tempdb..[##TempTableForConvertToHTML]') AND type in (N'U'))   
+ DROP TABLE [##TempTableForConvertToHTML]  
+ IF  EXISTS (SELECT * FROM tempdb.sys.objects WHERE object_id = OBJECT_ID(N'tempdb..[##TempTableForConvertToHTML_temp1234]') AND type in (N'U'))   
+ DROP TABLE [##TempTableForConvertToHTML_temp1234]  
+ IF  EXISTS (SELECT * FROM tempdb.sys.objects WHERE object_id = OBJECT_ID(N'tempdb..[##TempTableForConvertToHTML_temp123]') AND type in (N'U'))   
+ DROP TABLE [##TempTableForConvertToHTML_temp123] 
+ IF  EXISTS (SELECT * FROM tempdb.sys.objects WHERE object_id = OBJECT_ID(N'tempdb..[##TempTableForConvertToHTML55]') AND type in (N'U'))   
+ DROP TABLE [##TempTableForConvertToHTML55]  
+  
+  
+ DECLARE @SqlQuery AS NVARCHAR(4000) 
+ DECLARE @SqlQuery1 AS NVARCHAR(4000) 
+ DECLARE @SqlQuery2 AS NVARCHAR(4000)   
+ DECLARE @Html AS NVARCHAR(MAX)
+ DECLARE @Html1 AS NVARCHAR(MAX)
+ DECLARE @Html2 AS NVARCHAR(MAX)     
+ DECLARE @p_recipients AS VARCHAR(5000)   
+ DECLARE @p_body AS NVARCHAR(MAX)  
+ DECLARE @p_body2 AS NVARCHAR(MAX) 
+ DECLARE @p_body3 AS NVARCHAR(MAX) 
+ DECLARE @p_body_new AS NVARCHAR(MAX)
+ DECLARE @counter AS INT,@Profile_Name sysname  
+
+ CREATE TABLE ##TempTableForConvertToHTML   
+ (  
+  [Job Name] NVARCHAR(1000),   
+  [Job Status] NVARCHAR(1000),  
+  [Disabled by] NVARCHAR(1000) DEFAULT '-',
+  [From Date] NVARCHAR(1000), 
+  [Red_Flag] BIT DEFAULT(0),
+  [Days Old Status] INT   
+ )  
+
+ INSERT INTO ##TempTableForConvertToHTML ([Job Name],[Job Status],[Disabled by],[From Date],[Days Old Status])  
+ SELECT [Job Name],[Job Status]
+,ISNULL([User Name],('-N/A-')) AS [Disabled by],ISNULL((CONVERT(VARCHAR(100),[From date])),(SELECT modify_date FROM sys.tables
+WHERE name LIKE 't_dba_sysjobs_enabled_log')) [From date], DATEDIFF(Day,ISNULL((CONVERT(VARCHAR(100),[From date])),(SELECT modify_date FROM sys.tables
+WHERE name LIKE 't_dba_sysjobs_enabled_log')),GETDATE()) [Days]
+FROM (  
+   SELECT J.name AS [Job Name],  CASE JH.run_status WHEN 0 THEN 'Failed' WHEN 3 THEN 'Cancelled' END AS [Job Status]  
+   ,JL_N.[User Name],JL_N.[From date] FROM msdb.dbo.sysjobhistory JH   
+  INNER JOIN   
+   (SELECT MAX(instance_id) max_instance_id, job_id  
+   FROM msdb.dbo.sysjobhistory JH1  
+   GROUP BY JH1.job_id) MID  
+   ON JH.instance_id = MID.max_instance_id  
+  INNER JOIN msdb.dbo.sysjobs J  
+   ON JH.job_id = J.job_id  
+   LEFT JOIN 
+
+   		 ( SELECT (Rec_Created_Date) [From date],JL.[Job Name], JEL.[User Name] FROM t_dba_sysjobs_enabled_log JEL
+INNER JOIN
+(
+SELECT MAX(Rec_Created_Date) [From date],[Job Name] FROM t_dba_sysjobs_enabled_log WHERE [New Job Status] = 'Disabled'
+GROUP BY [Job Name]
+) JL
+ON JL.[Job Name] = JEL.[Job Name] 
+AND JL.[From date] = JEL.Rec_Created_Date) JL_N
+ON JL_N.[Job Name] = J.name
+
+   WHERE JH.run_status in (0,3)--0 = Failed, 1 = Succeeded, 2 = Retry, 3 = Cancelled   
+   AND category_id  NOT IN (SELECT category_id FROM msdb.dbo.syscategories  WHERE category_class = 1    
+          AND category_type = 1 AND [name] = N'REPL-Snapshot')  
+   
+   UNION ALL  
+   
+   SELECT [name] AS [Job Name], 'Disabled' AS [Job Status], [User Name], [From date] 
+   FROM msdb.dbo.sysjobs J
+   
+   LEFT JOIN
+    ( SELECT (Rec_Created_Date) [From date],JL.[Job Name], JEL.[User Name] FROM t_dba_sysjobs_enabled_log JEL 
+INNER JOIN
+(
+SELECT MAX(Rec_Created_Date) [From date],[Job Name] FROM t_dba_sysjobs_enabled_log WHERE [New Job Status] = 'Disabled'
+GROUP BY [Job Name]
+) JL
+ON JL.[Job Name] = JEL.[Job Name] 
+AND JL.[From date] = JEL.Rec_Created_Date) JL_N
+ON JL_N.[Job Name] = J.name 
+   WHERE enabled = 0      
+   AND [name] <> 'syspolicy_purge_history' AND [name] <> 'DBA - Maint -AlertingTest'  
+   AND category_id  NOT IN (SELECT category_id FROM msdb.dbo.syscategories  WHERE category_class = 1    
+          AND category_type = 1 AND [name] = N'REPL-Snapshot')) X ORDER BY 2 DESC,1   
+ SET @counter =  @@ROWCOUNT  
+   
+  
+ UPDATE ##TempTableForConvertToHTML SET   
+  [Job Name] = '<B><Font color=red>' + [Job Name] + '</B></Font>'  
+  ,[Job Status] = '<B><Font color=red>' + [Job Status] + '</B></Font>'  
+  ,[Red_Flag]=1  
+ WHERE ([Job Status] in ('Cancelled', 'Failed') ) --AND [Job Name] in (SELECT [name] FROM msdb.dbo.sysjobs WHERE enabled = 1))  
+   
+ SELECT * INTO ##TempTableForConvertToHTML_temp123  
+ FROM ##TempTableForConvertToHTML  
+ WHERE [Job Status] LIKE '%Cancelled%' OR [Job Status] LIKE '%Failed%'
+ ORDER BY [Red_Flag] DESC,[Job Status]  
+  
+ IF (@counter > 0)  
+  BEGIN  
+   SET @p_body = CASE WHEN EXISTS(SELECT TOP 1 [Job Name] FROM ##TempTableForConvertToHTML_temp123) THEN '<html><p><strong>The following jobs are in Failed/Cancelled Status.</strong></p></body></html>'  ELSE '<html><p><strong>None of the jobs are in Failed/Cancelled Status.</strong></p></body></html>' END
+   
+   SET @p_body2 = '<html><p><strong>Note: The Server Time(EST) is operating on:  '  + CONVERT(VARCHAR(30), GETDATE(), 121)+'</strong></p></body></html>' 
+  
+  SELECT Row_number() OVER (ORDER BY [Days Old Status] DESC) AS SNo,* INTO ##TempTableForConvertToHTML_temp1234  
+ FROM ##TempTableForConvertToHTML  
+ WHERE [Job Status] NOT LIKE '%Cancelled%' AND [Job Status] NOT LIKE '%Failed%'
+ --ORDER BY [From Date] DESC
+
+ SET @p_body_new = CASE WHEN EXISTS( SELECT TOP 1 [Job Name] FROM ##TempTableForConvertToHTML_temp1234) THEN '<html><p><strong>The following jobs are in Disabled Status.</strong></p></body></html>'   ELSE '<html><p><strong>None of the jobs are in Disabled Status.</strong></p></body></html>' END
+  
+   SET @SqlQuery = 'SELECT [Job Name],[Job Status] FROM ##TempTableForConvertToHTML_temp123'  
+   SET @SqlQuery1 = 'SELECT [Job Name],[Job Status],[Disabled by],[From Date],[Days Old Status] FROM ##TempTableForConvertToHTML_temp1234'  
+   
+   EXEC [dbo].[p_DBA_ConvertTableToHtml] @SqlQuery, @Html OUTPUT  
+     
+   SET @Html = REPLACE(@Html,'&lt;','<')  
+   SET @Html = REPLACE(@Html,'&gt;','>')  
+
+   EXEC [dbo].[p_DBA_ConvertTableToHtml] @SqlQuery1, @Html1 OUTPUT  
+     
+   SET @Html1 = REPLACE(@Html1,'&lt;','<')  
+   SET @Html1 = REPLACE(@Html1,'&gt;','>')  
+
+   SET @p_body =  ISNULL(@p_body,'') + ISNULL(@Html,'') + ISNULL(@p_body_new,'') + ISNULL(@Html1,'')
+  END  
+ ELSE  
+  BEGIN  
+  SET @p_body = '<html><p><strong>There are no Jobs in Failed/Cancelled/Disabled Status.</strong></p></body></html>'   
+  
+  END  
+  DECLARE @p_subject AS VARCHAR(500) = @P_SERVERNAME +' (Report) '+ '-- Jobs in Failed/Cancelled/Disabled Status  ' + '('+ 'DBA Mail -'+' ' + CONVERT(VARCHAR, getdate(), 9) + ')'
+ 
+ SELECT @p_recipients= info_value  
+ FROM ADMIN..[tb_info]   
+ WHERE [Info_Key]=   @ToEmail 
+  
+  SET @p_recipients = ISNULL(@p_recipients, @ToEmail)  
+  SELECT @ToEmail Emaillist, @p_recipients Email_address
+  SELECT @Profile_Name= info_value  
+  FROM ADMIN..[tb_info]   
+  WHERE [Info_Key]= 'Current-DBA-Profile-Name'  
+  
+ IF @SendEmail=1  
+  BEGIN   
+    EXEC msdb..sp_send_dbmail  
+       @Profile_name=@Profile_Name,  
+       @recipients = @p_recipients   
+      ,@subject  = @p_subject  
+      ,@body   = @p_body  
+      ,@body_format ='html'  
+      ,@importance = 'high'  
+  END  
+  
+ --DELETING TEMPORARY TABLES INCLUDING ##columns of p_DBA_ConvertTableToHtml  
+ IF  EXISTS (SELECT * FROM tempdb.sys.objects WHERE object_id = OBJECT_ID(N'tempdb..[##TempTableForConvertToHTML]') AND type in (N'U'))   
+ DROP TABLE [##TempTableForConvertToHTML]  
+ IF  EXISTS (SELECT * FROM tempdb.sys.objects WHERE object_id = OBJECT_ID(N'tempdb..[##TempTableForConvertToHTML_temp123]') AND type in (N'U'))   
+ DROP TABLE [##TempTableForConvertToHTML_temp123]  
+  
+SET NOCOUNT OFF  
+  
+  
+  
+  
+  
+  
+  
+GO
+
