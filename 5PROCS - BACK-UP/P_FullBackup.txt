@@ -1,0 +1,139 @@
+USE [ADMIN]
+GO
+
+/****** Object:  StoredProcedure [dbo].[P_FullBackup]    Script Date: 12/1/2021 7:23:16 AM ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+
+
+CREATE PROCEDURE [dbo].[P_FullBackup]
+AS
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED
+BEGIN
+SET NOCOUNT ON;
+DBCC TRACEON (3042, 1)
+
+DECLARE @DirTree TABLE (subdirectory nvarchar(255), depth INT)
+DECLARE @dbs TABLE (
+ID INT IDENTITY(1,1) NOT NULL,
+p_dbname sysname NOT NULL
+, p_FullBkp BIT, p_DiffBkp BIT, p_LogBkp BIT, p_VerifyBkp BIT
+, p_Active  BIT, p_CompressBkp BIT, p_MultiStripes BIT, P_BkpDir varchar(5000)
+	)
+
+      
+DECLARE @tsql nvarchar(1000)
+DECLARE @db sysname
+DECLARE @p_MultiStripes bit
+DECLARE @databasesizeMb table 
+ (
+databasesizeMb float
+ )
+DECLARE @databasesizeMbcheck FLOAT
+
+DECLARE @dbcount INT, 
+	@cmd VARCHAR(4000),
+	@BackupFolder VARCHAR(500)
+
+INSERT INTO @dbs (p_dbname,  p_FullBkp, p_DiffBkp, p_LogBkp, 
+					p_VerifyBkp, p_Active, p_CompressBkp, p_MultiStripes, p_BkpDir)
+	SELECT dbname,  FullBkp, DiffBkp, LogBkp, 
+					VerifyBkp, Active, CompressBkp, MultiStripes, BkpDir
+	FROM ADMIN..tb_backup_info
+	WHERE Active=1	
+	ORDER BY SNO DESC
+
+--SELECT * FROM tb_backup_info
+
+
+SET @dbcount = (SELECT COUNT (ID) FROM @dbs)
+
+WHILE @dbcount > 0 
+BEGIN
+	
+	SELECT @BackupFolder = p_BkpDir + p_dbname FROM @dbs WHERE ID = @dbcount
+	INSERT INTO @DirTree(subdirectory, depth)
+	EXEC master.sys.xp_dirtree @BackupFolder
+	
+	--Create the @BackupFolder directory if it does not exist
+	IF NOT EXISTS (SELECT 1 FROM @DirTree WHERE subdirectory = @BackupFolder )
+	EXEC master.dbo.xp_create_subdir @BackupFolder
+	
+	SET @db = ( SELECT TOP 1 p_dbname FROM @dbs WHERE ID = @dbcount)
+	SET @p_MultiStripes = ( SELECT TOP 1 p_MultiStripes FROM @dbs WHERE ID = @dbcount)
+
+
+	SET @tsql = 
+	' USE [' + @db + ']; ' +
+	'
+	SELECT
+	CAST(CASE s.type WHEN 2 THEN 0 ELSE CAST(FILEPROPERTY(s.name, ''SpaceUsed'') AS float)* 
+	CONVERT(float,8) END AS float)/1024.0 AS [UsedSpaceMB]
+	FROM
+	sys.filegroups AS g
+	INNER JOIN sys.master_files AS s ON ((s.type = 2 or s.type = 0) 
+	and s.database_id = db_id() and (s.drop_lsn IS NULL)) AND (s.data_space_id=g.data_space_id)
+	'
+	INSERT INTO @databasesizeMb 
+	EXEC(@tsql)
+	
+	SET @databasesizeMbcheck = (SELECT  TOP 1 databasesizeMb  FROM @databasesizeMb)
+	
+	DELETE FROM @databasesizeMb
+
+	DECLARE @p_compression_Check int;DECLARE @CompressBkpCmd varchar(50);
+	SELECT @p_compression_Check = ( SELECT TOP 1 p_CompressBkp FROM @dbs WHERE ID = @dbcount)
+
+ 
+	IF ISNULL(@p_compression_Check, 1) = 1
+	BEGIN
+		SELECT @CompressBkpCmd = 'COMPRESSION,'
+	END
+	ELSE 
+		SELECT @CompressBkpCmd = ''
+	
+
+	If ISNULL(@p_MultiStripes, 1) = 1
+	BEGIN
+		SELECT @cmd = REPLACE(REPLACE(
+		'BACKUP DATABASE [<db>] 
+		TO DISK='''+@BackupFolder+'\FULL_<db>_<ts>_Strip1of4.BAK'','+
+		' DISK='''+@BackupFolder+'\FULL_<db>_<ts>_Strip2of4.BAK'',' +
+		' DISK='''+@BackupFolder+'\FULL_<db>_<ts>_Strip3of4.BAK'',' +
+		' DISK='''+@BackupFolder+'\FULL_<db>_<ts>_Strip4of4.BAK''' +
+		' WITH INIT, ' + @CompressBkpCmd + ' MAXTRANSFERSIZE = 2097152, NAME=''Full Backup of <db>''',
+		'<db>', p_dbname ),
+		'<ts>', CONVERT(VARCHAR,GETDATE(),112)+'_'+REPLACE(CONVERT(VARCHAR,GETDATE(),108),':',''))
+		FROM @dbs WHERE ID = @dbcount
+	END
+	ELSE
+	BEGIN
+		
+		SELECT @cmd = REPLACE(REPLACE(
+		'BACKUP DATABASE [<db>] 
+		TO DISK='''+@BackupFolder+'\FULL_<db>_<ts>_Strip1of1.BAK'''+' 
+		WITH INIT, MAXTRANSFERSIZE = 2097152, NAME=''Full Backup of <db>''',
+		'<db>', p_dbname ),
+		'<ts>', convert(varchar,getdate(),112)+'_'+replace(convert(varchar,getdate(),108),':',''))
+		FROM @dbs WHERE ID = @dbcount
+	End
+	Print (@cmd)
+	EXEC (@cmd)
+
+	SELECT @dbcount = @dbcount - 1
+
+	END
+
+DBCC TRACEOFF (3042, 1)
+
+
+END
+
+
+GO
+

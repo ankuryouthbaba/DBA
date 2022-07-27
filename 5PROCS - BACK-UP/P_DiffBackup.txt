@@ -1,0 +1,87 @@
+USE [ADMIN]
+GO
+
+/****** Object:  StoredProcedure [dbo].[P_DiffBackup]    Script Date: 12/1/2021 7:22:48 AM ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+
+CREATE PROCEDURE [dbo].[P_DiffBackup]
+AS
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED
+BEGIN
+SET NOCOUNT ON;
+
+DBCC TRACEON (3042, 1)
+
+DECLARE @DirTree TABLE (subdirectory nvarchar(255), depth INT)
+DECLARE @dbs TABLE (
+ID INT IDENTITY(1,1) NOT NULL,
+p_dbname sysname NOT NULL
+, p_FullBkp BIT, p_DiffBkp BIT, p_LogBkp BIT, p_VerifyBkp BIT
+, p_Active  BIT, p_CompressBkp BIT, p_MultiStripes BIT, P_BkpDir varchar(5000)
+	)
+
+      
+DECLARE @tsql nvarchar(1000)
+DECLARE @db sysname
+DECLARE @p_MultiStripes bit
+DECLARE @databasesizeMb table 
+ (
+databasesizeMb float
+ )
+DECLARE @databasesizeMbcheck FLOAT
+
+DECLARE @dbcount INT, 
+	@cmd VARCHAR(4000),
+	@BackupFolder VARCHAR(500)
+
+INSERT INTO @dbs (p_dbname,  p_FullBkp, p_DiffBkp, p_LogBkp, 
+					p_VerifyBkp, p_Active, p_CompressBkp, p_MultiStripes, p_BkpDir)
+	SELECT dbname,  FullBkp, DiffBkp, LogBkp, 
+					VerifyBkp, Active, CompressBkp, MultiStripes, BkpDir
+	FROM ADMIN..tb_backup_info
+	WHERE Active=1	AND DiffBkp =1
+	ORDER BY SNO DESC
+
+SET @dbcount = (SELECT COUNT (ID) FROM @dbs)
+
+--SELECT * FROM tb_backup_info
+
+
+WHILE @dbcount > 0 
+BEGIN
+	
+	SELECT @BackupFolder = p_BkpDir + p_dbname FROM @dbs WHERE ID = @dbcount
+	INSERT INTO @DirTree(subdirectory, depth)
+	EXEC master.sys.xp_dirtree @BackupFolder
+	
+	--Create the @BackupFolder directory if it does not exist
+	IF NOT EXISTS (SELECT 1 FROM @DirTree WHERE subdirectory = @BackupFolder )
+	EXEC master.dbo.xp_create_subdir @BackupFolder
+
+	SELECT @cmd = REPLACE(REPLACE(
+            'BACKUP DATABASE [<db>] TO DISK='''+@BackupFolder+'\DIFFERENTIAL_<db>_<ts>.diff'''+' WITH DIFFERENTIAL,  NAME=''DIFFERENTIAL Backup of <db>''',
+            '<db>', p_dbname ),
+            '<ts>', convert(varchar,getdate(),112)+'_'+replace(convert(varchar,getdate(),108),':',''))
+	FROM @dbs WHERE ID = @dbcount
+
+	PRINT (@cmd)
+	EXEC (@cmd)
+
+	SELECT @dbcount = @dbcount - 1 
+
+	END
+
+DBCC TRACEOFF (3042, 1)
+
+
+END
+
+
+GO
+

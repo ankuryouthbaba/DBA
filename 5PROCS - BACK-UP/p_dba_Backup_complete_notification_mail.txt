@@ -1,0 +1,127 @@
+USE [ADMIN]
+GO
+
+/****** Object:  StoredProcedure [dbo].[p_dba_Backup_complete_notification_mail]    Script Date: 12/1/2021 8:12:01 AM ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+create PROC [dbo].[p_dba_Backup_complete_notification_mail]
+(
+	 @BKPtype CHAR(1)=NULL
+	,@SendMail BIT= 0
+	,@ToEmail VARCHAR(600)=''
+)
+
+AS
+
+
+/*************INTRODUCTION*************************************
+
+Name of the Proc  :p_dba_Backup_Complete_Notification_Mail
+Purpose of Proc   :DBA Backup Complete Notification Mail
+Syntax of Proc	  :EXEC ADMIN.dbo.p_dba_Backup_complete_notification_mail @SendMail=1,@ToEmail='stiwari@fvfn.com'
+Author of Proc    :SEAdminDBExperts
+
+
+**********************************************************************/
+
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED
+
+DECLARE @Profile_Name SYSNAME,@MSGtype CHAR(1)= NULL
+
+IF @BKPtype IS NULL
+BEGIN
+	IF (DATEPART(W, GETDATE()) = 1)
+	SELECT @BKPtype = 'D'
+	ELSE
+	SELECT @BKPtype = 'I'
+END
+
+IF (@BKPtype NOT IN ('D','I') )
+BEGIN 
+	RAISERROR ('The Database Backup Type entered is incorrect ...', 16, 128)
+	RETURN
+END
+
+	
+SELECT  
+IDENTITY(INT,1,1) SNo
+,Backup_Start_Date
+, CAST(CAST(((backup_size/10000/1024.00)/1024.00) AS DECIMAL(10,3)) AS VARCHAR(10)) Size_GB
+,CAST( (DATEDIFF(MINUTE,backup_start_date,backup_finish_date))/60 AS VARCHAR(5))+ ' Hours' + '  '+ RIGHT('0' + CAST( (DATEDIFF(MINUTE,backup_start_date,backup_finish_date))%60 AS VARCHAR(2)), 2)+' Minutes' AS 'Time_Taken'
+, Database_Name
+, physical_device_name [Backup_Location]
+INTO #TempTable
+FROM msdb..backupset backupset 
+LEFT JOIN msdb..backupmediafamily backupmediafamily ON backupmediafamily.media_set_id = backupset.media_set_id
+WHERE TYPE = 'D'  AND CAST(backup_start_date AS DATE)=CAST(GETDATE() AS DATE)
+
+--DECLARE @TotalBackup_duration int
+
+--SELECT sj.name,* FROM msdb..sysjobhistory jh
+--JOIN msdb..sysjobs sj on sj.job_id=jh.job_id
+--WHERE sj.name like '%diff%'
+--ORDER BY jh.run_date desc
+
+IF @MSGtype IS NULL
+BEGIN
+	IF (DATEPART(W, GETDATE()) = 1)
+	SELECT @MSGtype = 'D'
+	ELSE
+	SELECT @MSGtype = 'I'
+END
+
+DECLARE @p_subject AS VARCHAR(500)
+		IF  @MSGtype = 'D'  
+			BEGIN
+				--SET @p_subject=@@SERVERNAME+ ' '+ '--Full Backup of the databases Completed at ' + CONVERT(VARCHAR, GETDATE(), 9)
+				SET @p_subject= @@SERVERNAME+' (Information Only) '+ '-- Full Backup of the databases Completed  ' + CONVERT(VARCHAR, GETDATE(), 9)
+			END
+		ELSE
+			BEGIN
+				SELECT @MSGtype = 'I'
+				--SET @p_subject=@@SERVERNAME+ ' '+ '--Differential Backup of the databases Completed at ' + CONVERT(VARCHAR, GETDATE(), 9)
+				SET @p_subject=@@SERVERNAME+' (Information Only) '+ '-- Differential Backup of the databases Completed  ' + CONVERT(VARCHAR, GETDATE(), 9)
+			END
+		
+
+DECLARE @MailHtml AS VARCHAR(MAX),@MailHtmlFillerTable AS VARCHAR(MAX), @Html AS VARCHAR(MAX),@p_recipients AS VARCHAR(5000)
+DECLARE @HtmlMailTable_Title AS VARCHAR(MAX) = '<html><p><u><strong><span style="background-color:#eeeeee;">Details of the Backup completed today on '+@@SERVERNAME+'.'' </span></strong></u></p></body></html>'
+DECLARE @MailSQLText2 AS VARCHAR(5000)=  'select * from #TempTable '
+EXECUTE p_DBA_ConvertTableToHtml @MailSQLText2,@MailHtml OUTPUT
+
+SET @Html=ISNULL(@HtmlMailTable_Title,'') + ISNULL(@MailHtml,'')
+	 
+	IF  @SendMail=1
+		BEGIN
+					SELECT @p_recipients= info_value
+							FROM [tb_info] 
+							WHERE [Info_Key]=@ToEmail
+							SET @p_recipients = ISNULL(@p_recipients, @Toemail)
+							Select @ToEmail, @p_recipients
+
+
+					SELECT @Profile_Name= info_value
+					FROM ADMIN..[tb_info] 
+					WHERE [Info_Key]= 'Current-DBA-Profile-Name'
+						
+							
+				    EXEC MSDB..SP_SEND_DBMAIL
+					 @Profile_name = @Profile_Name,
+					 @recipients	= @p_recipients 
+					,@subject		= @p_subject
+					,@body			= @Html
+					,@body_format	='html'
+					,@importance	= 'Normal'
+					
+			END
+							
+
+
+
+GO
+
