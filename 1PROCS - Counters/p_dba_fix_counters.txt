@@ -1,0 +1,159 @@
+USE [ADMIN]
+GO
+
+/****** Object:  StoredProcedure [dbo].[p_dba_fix_counters]    Script Date: 12/15/2021 11:17:16 AM ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+CREATE PROCEDURE [dbo].[p_dba_fix_counters]
+ @SendMail BIT=1,  
+ @Threshhold int=15,
+ @job_name varchar (200)='DBA - Collect - Collect Counters from Typeperf ',
+ @ToEmail varchar(500)=''
+/***********************************************INTRODUCTION********************************************************************
+	
+Author:                SE AdminDB Experts.
+
+Purpose:             To keepa check on DBA-Job-Collect_Performance_Counters job,if it is working fine and capturing counters
+						
+
+Description:  
+1.				This proc uses table sysjobactivity to check the job status of DBA-Job-Collect_Performance_Counters job from                   column stop_execution_date. It also uses sysjobs for the existence of Job.                     
+2.		        It checks the existence of job,if the job is not present it raises error and send mail.
+3.				if the job is stopped ,it restarts the job.
+4.              iF the job is running but not capturing counters,it stop the job,restart it automatically and send notification                to the @ToEmail recipients.
+
+
+Parameters Explained:
+@sendMail							----	is 1 when you need to send email to the recipients about Proc output.
+@ToEmail							----	Contains the list of email recipients to whome the output of Proc is to be sent.
+@Threshhold                         ----    It is the minimum value in minutes at which proc perform its functions when counter                                            doesn't get captured. 
+ @job_name                          ----    It contains the name of the job 'DBA-Job-Collect_Performance_Counters'.
+
+Sample Execution parameters:   
+--EXEC Admin..p_dba_collect_AlwaysOn_Health_Stats 
+@SendMail=1
+@ToEmail = ''
+@Threshhold = 15
+@job_name= 'DBA-Job-Collect_Performance_Counters'
+*******************************************************************************************************************************/
+
+
+
+
+
+ AS
+ SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED 
+ BEGIN TRY
+
+DECLARE @LastCaptured_Date DATETIME2
+DECLARE @CurrentTime_Stamp DATETIME2=GETDATE()
+Declare @p_servername varchar(500)
+SELECT @p_servername=info_value  FROM [dbo].[tb_info] WHERE [Info_Key]='ServerName'
+DECLARE @p_recipients AS VARCHAR(5000)
+DECLARE @Profile_Name sysname
+DECLARE @Name varchar(100)
+
+SELECT @p_recipients= info_value
+FROM [tb_info] 
+WHERE [Info_Key]=@ToEmail
+SET @p_recipients = ISNULL(@p_recipients, @Toemail)
+
+ SELECT TOP 1 @LastCaptured_Date= CAST(SUBSTRING(CounterDateTime,1,23) AS DATETIME) FROM CounterData ORDER BY CounterDateTime DESC
+Select @Name= name from msdb..sysjobs where name =@job_name
+
+SELECT isnull('Job Name ''' +@name+''''+ ' exists on the server', 'Job Name ''' + @job_name+''''+ ' does not exist on the server')  as Presence_Of_Job
+
+/***if the job is not present,it will simply send a mail that job is not present ***/
+
+If @Name is  null 
+BEGIN 
+DECLARE @Message varchar(200)
+DECLARE @Counter_job varchar (100)
+SET @Counter_job='DBA-Job-Collect_Performance_Counters'
+SET @Message='the Counter collection job which is used by counter auto fixed job is not present on the server.Please check if the job exists on the server or if the name is correct'
+ 
+ RAISERROR('%s : %s',0,42,@Counter_job,@Message) WITH NOWAIT;
+  END
+                      /*****Job will be started if is is currently not running*****/		
+
+ELSE 
+                    ------LOGIC STARTS HERE------
+
+DECLARE @stop_exec datetime2
+SELECT top 1 @stop_exec= stop_execution_date  from msdb..sysjobactivity
+inner join  msdb..sysjobs on sysjobs.job_id =sysjobactivity.job_id
+Where name = @job_name 
+order by session_id desc
+
+if @stop_exec is not null 
+  
+  BEGIN
+  DECLARE @stop_time varchar (50)
+  SELECT @stop_time = convert(varchar,DATEDIFF(minute, @stop_exec,@CurrentTime_Stamp) )  
+  SELECT 'job was stopped from last' +' ' + @stop_time + ' '+ 'minutes. It is now restarted .'
+      EXEC  msdb..sp_start_job  @job_name
+      RETURN
+END
+
+ ELSE
+  /*****If the job is running but Counters are not getting captured,it will be stopped and started automatically*****/
+
+	IF (DATEDIFF(minute,@LastCaptured_Date,@CurrentTime_Stamp))>=@Threshhold or @Name is null   --and @stop_exec is null 
+	   BEGIN 
+	  EXEC  msdb..sp_stop_job  @job_name
+	   WAITFOR DELAY '00:00:05'
+	   EXEC  msdb..sp_start_job  @job_name
+	   select isnull( convert(varchar (200), @stop_exec),'sql job was in running condition but not capturing counters') as Job_Activity
+	   END
+	                       ------LOGIC ENDS HERE------
+	 ELSE 
+	 IF(DATEDIFF(minute,@LastCaptured_Date,@CurrentTime_Stamp))<@Threshhold and @name is not null
+
+	  BEGIN
+	   SELECT @LastCaptured_Date as LAST_CAPTURED_DATE
+       RETURN
+		END
+
+		IF @SendMail=1 
+		BEGIN
+		DECLARE @Recentcap_Date DATETIME
+		SELECT TOP 1 @Recentcap_Date= CAST(SUBSTRING(CounterDateTime,1,23) AS DATETIME) FROM CounterData ORDER BY               CounterDateTime DESC
+		
+		
+		 DECLARE @p_subject AS VARCHAR(MAX)
+			SELECT @p_subject=@p_servername +' (INFORMATION ONLY) '+ '-- The counters were stopped working.They are now successfully started by auto fix job .Counters were last captured '+' '+ convert(varchar,DATEDIFF(MINUTE,@Recentcap_Date, getdate())) +' '+' minutes ago  ' + ' ' + '('+ 'DBA Mail -'+' ' + CONVERT(VARCHAR, getdate(),9) + ')'
+			SELECT @Profile_Name= info_value
+						FROM [tb_info] 
+						WHERE [Info_Key]= 'Primary-SMTP-Profile-Name'
+						Select @ToEmail as Email_List,@p_recipients as Recipient
+
+			EXEC msdb.dbo.sp_send_dbmail
+			@Profile_name=@Profile_Name,
+			@subject =@p_subject,
+			@recipients = @p_recipients
+			END
+
+			END TRY
+			BEGIN CATCH  
+			 SELECT ERROR_NUMBER() AS ERROR_NUMBER
+     EXECUTE p_dba_Call_SqlErrorlog @ObjectID = @@PROCID;  
+	RETURN
+END CATCH;
+
+			
+
+	
+
+
+   
+
+	  
+
+		
+GO
+

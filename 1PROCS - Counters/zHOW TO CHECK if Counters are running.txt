@@ -1,0 +1,4 @@
+
+select * from counterdata order by 1 desc
+
+select * from counterdetails

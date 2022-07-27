@@ -1,0 +1,118 @@
+USE [ADMIN]
+GO
+
+/****** Object:  StoredProcedure [dbo].[p_dba_TopIOConsumingQueries_AvgIO]    Script Date: 12/15/2021 11:21:19 AM ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+--[p_dba_TopIOConsumingQueries_AvgIO] @duration = 30, @TopStatements = 20
+CREATE PROC [dbo].[p_dba_TopIOConsumingQueries_AvgIO]
+(	@SendMail BIT = 0,@ToEmail VARCHAR(500)='Email List - Top Resource Consumption Report', 
+	@fromDate datetime = NULL,
+	@toDate datetime = NULL,
+	@duration int = 30,
+	@TopStatements int = 20	
+)
+AS
+--	EXEC Admin..p_dba_TopIOConsumingQueries_AvgIO @SendMail=1,@ToEmail='DBA_TEST'
+/*************************************************************************
+** Name:p_dba_TopIOConsumingQueries_AvgIO
+** Desc:p_dba_TopIOConsumingQueries_AvgIO report proc
+**************************************************************************
+**History
+**************************************************************************
+--@SendMail
+Posible Values: 
+				1 = Email send
+				0 = Email not send
+		
+@ToEmail:To whom need to send email
+Posible Values:	
+				APP_ADMIN ,DBA_ADMIN,DBA_TEST
+				
+--EXEC Admin..p_dba_TopIOConsumingQueries_AvgIO @SendMail=1,@ToEmail='DBA_TEST'
+**************************************************************************/
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED
+	DECLARE @lastRestartTime datetime,@Profile_Name sysname
+	SELECT @lastRestartTime = login_time FROM master.dbo.sysprocesses WHERE spid = 1
+	
+DECLARE @P_SERVERNAME VARCHAR(500)
+SELECT @P_SERVERNAME = INFO_VALUE FROM admin..tb_info WHERE INFO_KEY = 'SERVERNAME'
+
+	IF (@fromDate IS NULL AND @toDate IS NULL)
+	BEGIN
+		SET @toDate = GETDATE()
+		
+		IF (Datediff(day, @lastRestartTime, getdate()) < @duration)
+			SET @fromDate = @lastRestartTime
+		ELSE 
+			SET @fromDate = (SELECT GETDATE() - @duration)	
+		
+	END
+
+
+	SELECT @toDate, @fromDate
+		
+	SELECT TOP (@TopStatements)
+			NULLIF(MAX([Avg IO]) - MIN([Avg IO]), 0) As Diff_Avg_IO,	
+			NULLIF((MAX([Total Executions]) - MIN([Total Executions])), 0) as Diff_Total_Executions,
+			MIN([Statement Text]) AS [Statement Text],
+			MIN([Database Name]) AS [Database Name],
+			MIN([Object Name]) AS [Object Name],
+			MIN([Last Execution Time]) AS [FirstExecutionTime],
+			MAX([Last Execution Time]) AS [LastExecutionTime]
+	INTO #temp
+	FROM [t_dba_Top_AvgIO_ConsumingQueries]
+	WHERE RecordCreatedDate >= @fromDate and RecordCreatedDate <= @toDate
+	AND [Database Name] NOT IN ('Admin','msdb','master')
+	GROUP BY [Query Hash], [Query Plan Hash]
+	HAVING (MAX([Total Executions]) - MIN([Total Executions])) > 0		--added to exclude the executions count = 0
+	ORDER BY Diff_Avg_IO DESC
+
+	SELECT * FROM #temp
+
+	IF (@@ROWCOUNT > 0)
+	BEGIN		
+
+		DECLARE @Html AS VARCHAR(MAX)
+		DECLARE @p_recipients AS VARCHAR(5000)
+		SELECT @p_recipients= info_value
+		FROM ADMIN..[tb_info] 
+		WHERE [Info_Key]=@ToEmail
+		
+		Select @ToEmail, @p_recipients
+			
+		DECLARE @p_subject AS VARCHAR(500)=@P_SERVERNAME +' (Report) '+ '-- Top '+ cast(@TopStatements as varchar(5)) + ' IO Consuming Queries by Avg IO for the last ' + convert(varchar(3), @duration) + ' days'+ '('+ 'DBA Mail -'+' ' + CONVERT(VARCHAR, getdate(), 9) + ')'
+		DECLARE @SQLText AS VARCHAR(5000)=  'SELECT * From #temp'
+
+		EXECUTE p_DBA_ConvertTableToHtml @SQLText,@Html OUTPUT
+		
+		SELECT @Profile_Name= info_value
+		FROM ADMIN..[tb_info] 
+		WHERE [Info_Key]= 'Current-DBA-Profile-Name'
+			
+		IF @SendMail=1
+			BEGIN
+				EXEC msdb..sp_send_dbmail
+						 @Profile_name=@Profile_Name,
+						 @recipients	= @p_recipients 
+						,@subject		= @p_subject
+						,@body			= @Html
+						,@body_format	= 'html'
+						,@importance	= 'high'
+			END
+	END
+
+
+
+
+
+
+
+
+
+GO
+

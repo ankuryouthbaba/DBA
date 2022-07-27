@@ -1,0 +1,114 @@
+USE [ADMIN]
+GO
+
+/****** Object:  StoredProcedure [dbo].[p_dba_Check_Captured_Counter_Data_Info]    Script Date: 12/15/2021 11:16:13 AM ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+CREATE PROCEDURE [dbo].[p_dba_Check_Captured_Counter_Data_Info]
+ @SendMail BIT=0
+,@ToEmail varchar(500)='DBA Process Email List - Counter Not Captured'
+,@Threshhold int=15--minute
+AS
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED
+--EXEC dbo.p_dba_Check_Captured_Counter_Data_Info @SendMail=1,@Threshhold=1
+BEGIN
+
+
+Declare @p_servername varchar(500)
+select @p_servername = info_value from tb_info where info_key = 'ServerName'
+	DECLARE @p_recipients AS VARCHAR(5000)
+
+	SELECT @p_recipients= info_value
+FROM [tb_info] 
+WHERE [Info_Key]=@ToEmail
+SET @p_recipients = ISNULL(@p_recipients, @Toemail)
+Select @ToEmail, @p_recipients
+	
+	Select @ToEmail, @p_recipients
+
+	BEGIN TRY
+	
+	DECLARE @LastCaptured_Date DATETIME	,@Profile_Name sysname
+	DECLARE @CurrentTime_Stamp DATETIME=GETDATE()
+	DECLARE @Servername NVARCHAR(500)
+	SELECT @servername=info_value  FROM [dbo].[tb_info] WHERE [Info_Key]='ServerName'
+	SELECT TOP 1 @LastCaptured_Date= CAST(SUBSTRING(CounterDateTime,1,23) AS DATETIME) FROM CounterData ORDER BY CounterDateTime DESC
+	SELECT @LastCaptured_Date	
+	IF (DATEDIFF(minute,@LastCaptured_Date,@CurrentTime_Stamp))>=@Threshhold
+
+		BEGIN
+		
+			SELECT @LastCaptured_Date AS 'Last Capture Date' INTO #LASTCAPTUREDDATE
+			
+			DECLARE @Html AS VARCHAR(MAX), @HtmlFirstTable AS VARCHAR(MAX), @HtmlSecondTable AS VARCHAR(MAX), @HtmlFillerTable VARCHAR(MAX),@SQLText2 AS VARCHAR(MAX)
+											DECLARE @SQLText1 AS VARCHAR(MAX)--2k5
+											SET @SQLText1 = 'SELECT * FROM #LASTCAPTUREDDATE'
+
+											EXECUTE ADMIN.dbo.p_DBA_ConvertTableToHtml @SQLText1,@HtmlFirstTable OUTPUT
+
+											--REPLACING LESS THAN AND GREATER THAN AFTER HIGHLIGHTING
+											SET @HtmlFirstTable = REPLACE(@HtmlFirstTable,'&lt;','<')
+											SET @HtmlFirstTable = REPLACE(@HtmlFirstTable,'&gt;','>')
+
+											 
+											DECLARE @BodyText VARCHAR(MAX)
+											SET @BodyText= '<HTML>
+											<BR>
+											<BR>
+											<b>Please check ASAP on ' + @@SERVERNAME +' Server.The Counter data is not being captured for Database ' +Convert(varchar(200),DB_NAME()) +' the last '+ CONVERT(VARCHAR(100),DATEDIFF(minute,@LastCaptured_Date,@CurrentTime_Stamp))+' minutes.</b>
+											<BR>
+											<BR>
+											</HTML>' 
+											
+											 SET @HtmlFillerTable = '<HTML>
+											<BR>
+											<BR>
+											<BR>
+											<BR>
+											</HTML>' 
+											
+											----<P>' + @SQLText2 + ' </P>
+	SET @Html =@BodyText+ @HtmlFirstTable	+ @HtmlFillerTable 
+
+
+	IF @SendMail=1
+		BEGIN
+			DECLARE @p_subject AS VARCHAR(MAX)=@p_servername +' (Alert) '+ '-- The Counter data is not being captured for the last '+CONVERT(VARCHAR(100),DATEDIFF(minute,@LastCaptured_Date,@CurrentTime_Stamp))+' minutes  ' + ' ' + '('+ 'DBA Mail -'+' ' + CONVERT(VARCHAR, getdate(), 9) + ')'
+		
+						
+						SELECT @Profile_Name= info_value
+						FROM ADMIN..[tb_info] 
+						WHERE [Info_Key]= 'Current-DBA-Profile-Name'
+						Select @ToEmail, @p_recipients
+
+			EXEC msdb.dbo.sp_send_dbmail
+			@Profile_name=@Profile_Name,
+			@subject =@p_subject,
+			@recipients = @p_recipients,
+			@body = @Html,
+			@body_format ='HTML',
+			@importance =  'HIGH'
+			
+		 END
+	
+		END
+		
+	END TRY
+
+
+	BEGIN CATCH
+	  EXEC p_dba_Call_SqlErrorlog @ObjectID = @@PROCID;
+	
+	END CATCH
+END
+
+
+
+
+
+GO
+
