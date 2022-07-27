@@ -1,0 +1,22 @@
+USE [ADMIN]
+GO
+
+/****** Object:  Table [dbo].[t_dba_Log_DBFileSpaceInfo_LargeTables]    Script Date: 11/30/2021 6:47:21 AM ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+CREATE TABLE [dbo].[t_dba_Log_DBFileSpaceInfo_LargeTables](
+	[Database_Name] [varchar](500) NULL,
+	[TableName] [varchar](500) NULL,
+	[Total_SpaceMB] [varchar](max) NULL,
+	[RowCounts] [varchar](100) NULL,
+	[RecordDate] [datetime] NULL
+) ON [PRIMARY] TEXTIMAGE_ON [PRIMARY]
+GO
+
+ALTER TABLE [dbo].[t_dba_Log_DBFileSpaceInfo_LargeTables] ADD  DEFAULT (getdate()) FOR [RecordDate]
+GO
+

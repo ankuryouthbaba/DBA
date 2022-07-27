@@ -1,0 +1,29 @@
+USE [ADMIN]
+GO
+
+/****** Object:  Table [dbo].[t_dba_DBFile_SpaceInfo]    Script Date: 11/30/2021 6:49:15 AM ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+CREATE TABLE [dbo].[t_dba_DBFile_SpaceInfo](
+	[DatabaseName] [varchar](100) NULL,
+	[LogicalFileName] [sysname] NOT NULL,
+	[FileSize(MB)] [int] NULL,
+	[FileFreeSpace(MB)] [int] NULL,
+	[FileFreeSpacePct] [varchar](7) NULL,
+	[Drive] [nvarchar](1) NULL,
+	[DriveTotalSpace(GB)] [bigint] NULL,
+	[DriveAvailableSpace(GB)] [numeric](10, 2) NULL,
+	[DriveAvailableSpacePct] [numeric](10, 2) NULL,
+	[RecCreateDate] [datetime] NULL,
+	[type] [bit] NULL,
+	[Execution_Count] [int] NULL
+) ON [PRIMARY]
+GO
+
+ALTER TABLE [dbo].[t_dba_DBFile_SpaceInfo] ADD  DEFAULT (getdate()) FOR [RecCreateDate]
+GO
+
