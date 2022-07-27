@@ -1,0 +1,29 @@
+USE [Admin]
+GO
+
+/****** Object:  Table [dbo].[t_dba_indexDefragLog]    Script Date: 11/26/2021 10:59:21 AM ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+CREATE TABLE [dbo].[t_dba_indexDefragLog](
+	[indexDefrag_id] [int] IDENTITY(1,1) NOT NULL,
+	[databaseID] [int] NOT NULL,
+	[databaseName] [nvarchar](128) NOT NULL,
+	[objectID] [int] NOT NULL,
+	[objectName] [nvarchar](128) NOT NULL,
+	[indexID] [int] NOT NULL,
+	[indexName] [nvarchar](128) NOT NULL,
+	[partitionNumber] [smallint] NOT NULL,
+	[fragmentation] [float] NOT NULL,
+	[page_count] [int] NOT NULL,
+	[dateTimeStart] [datetime] NOT NULL,
+	[dateTimeEnd] [datetime] NULL,
+	[durationSeconds] [int] NULL,
+	[sqlStatement] [varchar](4000) NULL,
+	[errorMessage] [varchar](1000) NULL
+) ON [PRIMARY]
+GO
+

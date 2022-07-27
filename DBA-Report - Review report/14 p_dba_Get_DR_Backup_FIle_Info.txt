@@ -1,0 +1,222 @@
+USE [Admin]
+GO
+
+/****** Object:  StoredProcedure [dbo].[p_dba_Get_DR_Backup_FIle_Info]    Script Date: 11/26/2021 9:49:04 AM ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+CREATE PROC [dbo].[p_dba_Get_DR_Backup_FIle_Info]
+@SendMail BIT=0
+,@ToEmail VARCHAR(100)=''
+AS
+SET NOCOUNT ON;
+DECLARE @BackupDirectory SYSNAME
+SELECT @BackupDirectory=info_value FROM ADMIN..tb_info WHERE Info_Key='DR-Backup-Location'
+
+--SELECT info_value FROM ADMIN..tb_info WHERE Info_Key='DR-Backup-Location'--\\fv-core-db6\backups\FV-CORE-DB2\
+
+  IF OBJECT_ID('tempdb..#DirTree') IS NOT NULL
+    DROP TABLE #DirTree
+
+  CREATE TABLE #DirTree (
+    Id int identity(1,1),
+    SubDirectory nvarchar(255),
+    Depth smallint,
+    FileFlag bit,
+    ParentDirectoryID int
+   )
+
+   INSERT INTO #DirTree (SubDirectory, Depth, FileFlag)
+   EXEC MASTER..XP_DIRTREE @BackupDirectory, 10, 1
+   
+ 
+--Dlete log backups file row as we are not displaying in the output  
+   DELETE FROM #DirTree WHERE SubDirectory LIKE '%.trn' 
+
+   UPDATE #DirTree
+   SET ParentDirectoryID = (
+    SELECT MAX(Id) FROM #DirTree d2
+    WHERE Depth = d.Depth - 1 AND d2.Id < d.Id
+   )
+   FROM #DirTree d
+   
+ --SELECT * FROM #DirTree
+
+  DECLARE 
+    @ID INT,
+    @BackupFile VARCHAR(MAX),
+    @Depth TINYINT,
+    @FileFlag BIT,
+    @ParentDirectoryID INT,
+    @wkSubParentDirectoryID INT,
+    @wkSubDirectory VARCHAR(MAX)
+
+  DECLARE @BackupFiles TABLE
+  (
+    FileNamePath VARCHAR(MAX),
+    TransLogFlag BIT,
+    BackupFile VARCHAR(MAX),    
+    DatabaseName VARCHAR(MAX)
+  )
+
+  DECLARE FileCursor CURSOR LOCAL FORWARD_ONLY FOR
+  SELECT * FROM #DirTree WHERE FileFlag = 1
+
+  OPEN FileCursor
+  FETCH NEXT FROM FileCursor INTO 
+    @ID,
+    @BackupFile,
+    @Depth,
+    @FileFlag,
+    @ParentDirectoryID  
+
+  SET @wkSubParentDirectoryID = @ParentDirectoryID
+
+  WHILE @@FETCH_STATUS = 0
+  BEGIN
+    ------loop to generate path in reverse, starting with backup file then prefixing subfolders in a loop
+    WHILE @wkSubParentDirectoryID IS NOT NULL
+    BEGIN
+      SELECT @wkSubDirectory = SubDirectory, @wkSubParentDirectoryID = ParentDirectoryID 
+      FROM #DirTree 
+      WHERE ID = @wkSubParentDirectoryID
+      ------AND (dbo.FN_DBA_FIND_NTH_STR (FileNamePath,'\' ,6)) IS NOT NULL
+
+      SELECT @BackupFile = @wkSubDirectory + '\' + @BackupFile
+      ----PRINT @BackupFile + ' This is the first @BackupFile'
+    END
+    ------no more subfolders in loop so now prefix the root backup folder
+    SELECT @BackupFile = @BackupDirectory + @BackupFile
+   --PRINT @BackupFile + ' This is the second @BackupFile'
+
+
+    ------put backupfile into a table and then later work out which ones are log and full backups  
+    INSERT INTO @BackupFiles (FileNamePath) VALUES(@BackupFile)
+
+    FETCH NEXT FROM FileCursor INTO 
+      @ID,
+      @BackupFile,
+      @Depth,
+      @FileFlag,
+      @ParentDirectoryID 
+
+    SET @wkSubParentDirectoryID = @ParentDirectoryID      
+  END
+  CLOSE FileCursor
+  DEALLOCATE FileCursor  
+  
+SELECT LEFT(dbo.FN_DBA_FIND_NTH_STR (FileNamePath,'\' ,7), LEN(dbo.FN_DBA_FIND_NTH_STR (FileNamePath,'\' ,7)) - 1) AS DBName
+,dbo.FN_DBA_FIND_NTH_STR (FileNamePath,'\' ,8) AS BackupFile
+,CASE WHEN dbo.FN_DBA_FIND_NTH_STR (FileNamePath,'\' ,6) like 'FULL%' THEN 'FULL'
+	  WHEN dbo.FN_DBA_FIND_NTH_STR	(FileNamePath,'\' ,6) like 'Diff%' THEN 'DIFFERENTIAL'
+	  WHEN dbo.FN_DBA_FIND_NTH_STR (FileNamePath,'\' ,6) like 'Log%' THEN 'LOG'
+		ELSE 'UNKNOWN' END BackupType
+INTO #RESULT_TEMP
+FROM @BackupFiles
+WHERE (dbo.FN_DBA_FIND_NTH_STR (FileNamePath,'\' ,6)) IS NOT NULL
+AND dbo.FN_DBA_FIND_NTH_STR (FileNamePath,'\' ,7) NOT LIKE 'Daily%'
+--AND dbo.FN_DBA_FIND_NTH_STR (FileNamePath,'\' ,7)  NOT LIKE '%Strip1of1'
+ORDER BY BackupType DESC
+
+--SELECT * FROM #RESULT_TEMP
+
+IF OBJECT_ID('tempdb..##DR_BackupFiles_FinalOuput','U') IS NOT NULL
+DROP TABLE ##DR_BackupFiles_FinalOuput
+
+SELECT 
+IDENTITY(INT,1,1) SrNo
+,DBName
+,BackupFile
+,BackupType
+,CASE WHEN BackupType='FULL' THEN SUBSTRING(BackupFile,LEN(BackupFile)-(CHARINDEX( '_', REVERSE(BackupFile) + '_' )+14),15)
+	  WHEN BackupType='DIFFERENTIAL' THEN SUBSTRING(BackupFile,LEN(BackupFile)-(CHARINDEX( '.', REVERSE(BackupFile) + '.' )+14),15)
+	  ELSE 'NA' END  Backup_DateTime
+INTO #RESULT
+FROM #RESULT_TEMP
+WHERE BackupType <>'UNKNOWN'
+ORDER BY Backup_DateTime DESC
+
+--SELECT * FROM #RESULT
+
+--SELECT 
+--SrNo
+--,DBName
+----,CAST(SUBSTRING(REPLACE(Backup_DateTime,'_',' '),0,9) AS DATE) Backup_DateTime
+--,cast(SUBSTRING(REPLACE(Backup_DateTime,'_',' '),0,9) as varchar(100))  Backup_DateTime
+--,BackupType
+----,BackupFile
+--,'\\fv-core-db6\backups\FV-CORE-DB2\'+ CONVERT(VARCHAR(500),(CASE WHEN (SUBSTRING(BackupFile,1,4)) = 'DIFF' THEN 'Diffbackup\' ELSE 'FullBackup\' END)) 
+--+ CASE WHEN CHARINDEX('_',BackupFile, (CHARINDEX('_',BackupFile)+1)) - 
+-- CHARINDEX('_',BackupFile) < 4 THEN CONVERT(VARCHAR(MAX),SUBSTRING(BackupFile, CHARINDEX('_',BackupFile)+1,
+-- CHARINDEX('_2018',BackupFile)-CHARINDEX('_',BackupFile)-1)) ELSE 'Admin' END + '\' + BackupFile AS [Back_File_Path on DR server]
+--INTO ##DR_BackupFiles_FinalOuput
+--FROM #RESULT 
+
+SELECT 
+SrNo
+,DBName
+--,CAST(SUBSTRING(REPLACE(Backup_DateTime,'_',' '),0,9) AS DATE) Backup_DateTime
+,CAST(SUBSTRING(REPLACE(Backup_DateTime,'_',' '),0,9) as varchar(100))  Backup_DateTime
+,BackupType
+--,BackupFile
+,'\\fv-core-db6\backups\FV-CORE-DB2\'+ CONVERT(VARCHAR(500),(CASE WHEN (SUBSTRING(BackupFile,1,4)) = 'DIFF' THEN 'Diffbackup\' ELSE 'FullBackup\' END)) 
++ CASE WHEN (CHARINDEX('_',BackupFile, (CHARINDEX('_',BackupFile)+1)) - 
+ CHARINDEX('_',BackupFile) < 4) AND CHARINDEX('_2018',BackupFile) <> 0 AND CHARINDEX('_2018',BackupFile) > 17 
+ THEN CONVERT(VARCHAR(MAX),SUBSTRING(BackupFile, CHARINDEX('_',BackupFile)+1,
+ CHARINDEX('_2018',BackupFile)-CHARINDEX('_',BackupFile)-1)) 
+ 
+ WHEN (CHARINDEX('_',BackupFile, (CHARINDEX('_',BackupFile)+1)) - 
+ CHARINDEX('_',BackupFile) < 4)AND (CHARINDEX('_2019',BackupFile) <> 0) AND (CHARINDEX('_2019',BackupFile) > 17)
+ THEN CONVERT(VARCHAR(MAX),SUBSTRING(BackupFile, CHARINDEX('_',BackupFile)+1,
+ CHARINDEX('_2019',BackupFile)-CHARINDEX('_',BackupFile)-1))
+  
+ WHEN (CHARINDEX('_',BackupFile, (CHARINDEX('_',BackupFile)+1)) - 
+ CHARINDEX('_',BackupFile) > 4)AND (CHARINDEX('_2019',BackupFile) <> 0) AND (CHARINDEX('_2019',BackupFile) > 17)
+ THEN CONVERT(VARCHAR(MAX),SUBSTRING(BackupFile, CHARINDEX('_',BackupFile)+1,
+ CHARINDEX('_2019',BackupFile)-CHARINDEX('_',BackupFile)-1))
+  
+ WHEN (CHARINDEX('_',BackupFile, (CHARINDEX('_',BackupFile)+1)) - 
+ CHARINDEX('_',BackupFile) > 4)AND (CHARINDEX('_2018',BackupFile) <> 0) AND (CHARINDEX('_2018',BackupFile) > 17)
+ THEN CONVERT(VARCHAR(MAX),SUBSTRING(BackupFile, CHARINDEX('_',BackupFile)+1,
+ CHARINDEX('_2018',BackupFile)-CHARINDEX('_',BackupFile)-1))
+ 
+ WHEN (CHARINDEX('_2019',BackupFile) <= 17) AND (CHARINDEX('_2019',BackupFile) <> 0) 
+ THEN CONVERT(VARCHAR(MAX),SUBSTRING(BackupFile, CHARINDEX('_',BackupFile)+1,
+ CHARINDEX('_2019',BackupFile)-CHARINDEX('_',BackupFile)-1))
+ 
+ WHEN (CHARINDEX('_2018',BackupFile) <= 17) AND (CHARINDEX('_2018',BackupFile) <> 0) 
+ THEN CONVERT(VARCHAR(MAX),SUBSTRING(BackupFile, CHARINDEX('_',BackupFile)+1,
+ CHARINDEX('_2018',BackupFile)-CHARINDEX('_',BackupFile)-1))
+ 
+ WHEN (CHARINDEX('_',BackupFile, (CHARINDEX('_',BackupFile)+1)) - 
+ CHARINDEX('_',BackupFile) < 4)AND (CHARINDEX('_2017',BackupFile) <> 0) AND (CHARINDEX('_2017',BackupFile) > 17)
+ THEN CONVERT(VARCHAR(MAX),SUBSTRING(BackupFile, CHARINDEX('_',BackupFile)+1,
+ CHARINDEX('_2017',BackupFile)-CHARINDEX('_',BackupFile)-1))
+ 
+ WHEN (CHARINDEX('_',BackupFile, (CHARINDEX('_',BackupFile)+1)) - 
+ CHARINDEX('_',BackupFile) > 4)AND (CHARINDEX('_2017',BackupFile) <> 0) AND (CHARINDEX('_2017',BackupFile) > 17)
+ THEN CONVERT(VARCHAR(MAX),SUBSTRING(BackupFile, CHARINDEX('_',BackupFile)+1,
+ CHARINDEX('_2017',BackupFile)-CHARINDEX('_',BackupFile)-1))
+ 
+ WHEN (CHARINDEX('_2017',BackupFile) <= 17) AND (CHARINDEX('_2017',BackupFile) <> 0) 
+ THEN CONVERT(VARCHAR(MAX),SUBSTRING(BackupFile, CHARINDEX('_',BackupFile)+1,
+ CHARINDEX('_2017',BackupFile)-CHARINDEX('_',BackupFile)-1))
+ END
+ 
+   + '\' + BackupFile AS [Back_File_Path on DR server]
+INTO ##DR_BackupFiles_FinalOuput
+FROM #RESULT 
+ 
+
+--SELECT * FROM ##DR_BackupFiles_FinalOuput
+
+							
+
+
+
+GO
+

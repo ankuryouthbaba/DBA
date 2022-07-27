@@ -1,0 +1,153 @@
+USE [Admin]
+GO
+
+/****** Object:  StoredProcedure [dbo].[p_dba_show_DatabasesStatus]    Script Date: 11/26/2021 9:31:43 AM ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+CREATE PROC [dbo].[p_dba_show_DatabasesStatus]
+@Sendmail BIT = 0,
+@ToEmail VARCHAR(25)=''
+AS
+/*******************************************************************
+File Name:p_dba_show_DatabasesStatus.sql
+Proc Name:p_dba_show_DatabasesStatus
+Author   :
+History: 
+
+Create a new stored procedures to show Databases Status
+--EXEC admin.dbo.p_dba_show_DatabasesStatus @Sendmail=1,@ToEmail='DBA_TEST'
+**********************************************************************/
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED
+SET NOCOUNT ON
+
+--Try Catch Block Start here
+BEGIN TRY
+
+	--Business Logic start here
+DECLARE @p_recipients AS VARCHAR(5000), @HtmlFillerTable AS VARCHAR(MAX),@exceptdbfull varchar(50)
+
+SELECT 
+@@SERVERNAME AS [Server Name]
+,NAME AS [Database Name]
+,CONVERT (VARCHAR(200),DATABASEPROPERTYEX(NAME, 'Recovery')) AS [Recovery Model]
+,CONVERT (VARCHAR(200),DATABASEPROPERTYEX(NAME, 'Status')) AS [Database Status]
+,CONVERT (VARCHAR(200),DATABASEPROPERTYEX(NAME, 'Updateability')) AS [Modification Type]
+,CONVERT (INT,DATABASEPROPERTYEX(NAME, 'IsInStandBy'))AS [StandBy]
+,CONVERT (VARCHAR(200),DATABASEPROPERTYEX(NAME, 'UserAccess'))AS [Accessibility]
+INTO #DATABASESTATUS
+FROM master.dbo.sysdatabases 
+ORDER BY NAME ASC
+
+SELECT  database_name as FullBackup,max(backup_start_date) as Full_Backup_Date
+INTO #TempTable
+FROM msdb..backupset backupset 
+LEFT JOIN msdb..backupmediafamily backupmediafamily on backupmediafamily.media_set_id = backupset.media_set_id
+WHERE TYPE IN ('D') AND backup_start_date > (GETDATE()-30) 
+GROUP BY database_name
+order BY database_name
+
+Select * into #temptablefinal from #DATABASESTATUS ds
+left outer join #TempTable tt on ds.[Database Name]=tt.FullBackup
+
+SELECT   d.name ,case when max(b.backup_finish_date) > GETDATE()-1 then 'Yes' else 'No' end AS [LogBackup],max(b.backup_start_date) as [Log_Backup_Date]
+into #templog
+FROM     master.sys.databases d
+LEFT JOIN msdb..backupset b ON b.database_name = d.name AND b.type = 'L'
+GROUP BY d.name 
+
+select f.*,t.LogBackup,t.Log_Backup_Date
+into #temptablefinal2
+from #temptablefinal f
+left outer join #templog t on f.[database name]=t.name
+
+select CONVERT (VARCHAR(200),[Server Name]) AS [Server Name],
+CONVERT (VARCHAR(200),[Database Name]) AS [Database Name],
+CONVERT (VARCHAR(200),[Recovery Model]) AS [Recovery Model],
+CONVERT (VARCHAR(200),[Database Status]) AS [Database Status],
+CONVERT (VARCHAR(200),[Modification Type]) AS [Modification Type],
+CONVERT (VARCHAR(200),[StandBy]) AS [StandBy],
+CONVERT (VARCHAR(200),[Accessibility]) AS [Accessibility],
+CONVERT (VARCHAR(200),FullBackup) AS [Full Backup],
+CONVERT (VARCHAR(200),Full_Backup_Date) AS [Full Backup Date],
+CONVERT (VARCHAR(200),LogBackup) AS [Log Backup],
+CONVERT (VARCHAR(200),Log_Backup_Date) AS [Log Backup Date]
+into #temptablefinal3
+from #temptablefinal2
+WHERE [Database Name] NOT IN ('Distribution', 'Tempdb', 'model')
+SELECT
+[Server Name]
+,[Database Name]
+,[Recovery Model]
+,CASE WHEN [Database Status] <>'ONLINE' THEN '<b><font color=Red>'+ [Database Status]+'</b></font>' ELSE [Database Status] END  [Database Status]     
+,CASE WHEN [Modification Type] in ('READ_ONLY','READ_WRITE') THEN [Modification Type] ELSE '<b><font color=Red>'+ [Modification Type] +'</b></font>' END [Modification Type]
+,[StandBy]
+,[Accessibility]
+,CASE WHEN [Database Name] in ('tempdb','model') THEN 'NA'
+WHEN [Full Backup] is null THEN '<B><Font color=red>' + 'NO' + '</B></Font>' 
+ELSE 'YES' END [Full Backup]
+,CASE WHEN [Full Backup Date] IS NULL THEN 'NA' ELSE [Full Backup Date] END  [Full Backup Date]
+,CASE WHEN [Recovery Model] ='SIMPLE' THEN 'NA' 
+WHEN [Recovery Model] ='FULL' AND [Log Backup] = 'No' THEN '<B><Font color=red>' + [Log Backup] + '</B></Font>' ELSE [Log Backup] END  [Log Backup]
+,CASE WHEN [Log Backup Date] IS NULL THEN 'NA' ELSE [Log Backup Date] END  [Log Backup Date]
+FROM #temptablefinal3
+
+--Business Logic end here
+END TRY
+BEGIN CATCH	
+	EXEC p_dba_Call_SqlErrorlog @ObjectID = @@PROCID;
+END CATCH------Try Catch Block End Here
+
+IF (@sendMail =0 AND @ToEmail <>'')
+	BEGIN
+		RAISERROR('If we need to send email , we must keep the value of the parameter @sendemail as 1...', 16, 1)WITH NOWAIT;
+		RETURN
+	END
+
+IF (@sendMail =1 ) 
+
+BEGIN
+
+IF (@sendMail =1 AND @ToEmail ='')
+	BEGIN
+		RAISERROR('If the value of the parameter @sendemail is 1, we need to specify email address in the @ToEmail parameter 
+					else keep the @sendemail=0 and ToEmail=NULL or blank..', 16, 1)WITH NOWAIT;
+	RETURN
+	END
+
+	DECLARE @P_SERVERNAME VARCHAR(100)
+	DECLARE @Profile_Name VARCHAR(100)
+	DECLARE @p_subject AS VARCHAR(500)
+
+	DECLARE @Html AS VARCHAR(5000)
+	DECLARE @Html_Title AS VARCHAR(5000)
+	DECLARE @Html_databaseTables AS VARCHAR(5000)
+	DECLARE @SQL_TEXT_databaseTables AS VARCHAR(5000)=  'SELECT * FROM #temptablefinal3'
+
+	SELECT @P_SERVERNAME = INFO_VALUE FROM TB_INFO WHERE INFO_KEY = 'SERVERNAME'
+	SELECT @Profile_Name= info_value FROM [tb_info] WHERE [Info_Key]= 'Current-DBA-Profile-Name'
+	SELECT @p_subject =  @P_SERVERNAME +' (Report) '+ ' Database Status ' + '('+ 'DBA Mail -'+' ' + CONVERT(VARCHAR, getdate(), 9) + ')'	
+	SELECT @Html_Title = '<html><p><u><strong><span style="background-color:#eeeeee;">Database Status  </span></strong></u></p> <br> </body></html>'
+
+	EXECUTE  dbo.p_DBA_ConvertTableToHtml @SQL_TEXT_databaseTables,@Html_databaseTables OUTPUT   
+
+	SELECT @Html  = @Html_Title + @Html_databaseTables 
+
+	EXEC msdb.dbo.SP_SEND_DBMAIL
+			@Profile_name=@Profile_Name
+			,@recipients	= @ToEmail 
+			,@subject		= @p_subject
+			,@body		= @Html
+			,@body_format = 'html'	
+
+
+END
+
+
+
+GO
+

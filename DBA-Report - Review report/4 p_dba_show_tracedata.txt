@@ -1,0 +1,148 @@
+USE [ADMIN]
+GO
+
+/****** Object:  StoredProcedure [dbo].[p_dba_show_tracedata]    Script Date: 11/26/2021 8:40:26 AM ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+
+
+CREATE PROC [dbo].[p_dba_show_tracedata]  @sendMail bit =0, @ToEmail varchar(500) = ''
+AS
+/*******************************************************************
+File Name:p_dba_show_tracedata_beta.sql
+Proc Name:p_dba_show_tracedata_beta
+Author:
+History: 
+
+Create a new stored procedures to show trace related info
+--EXEC ADMIN..p_dba_show_tracedata_beta  @sendMail =1, @ToEmail = 'OpsDBASupport@scalabilityengineers.com'
+**********************************************************************/
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED
+SET NOCOUNT ON
+
+--Try Catch Block Start here
+BEGIN TRY
+
+	--Business Logic start here
+
+if object_id(N'tempdb..#traceinfo') is not null drop table #Traceinfo
+
+CREATE TABLE #Traceinfo(ID INT IDENTITY,Name VARCHAR(100),Info_Value VARCHAR(200))
+
+DECLARE @traceCheck int,@tracelocation VARCHAR(100),@tracefilepath VARCHAR(100),@Duration_Filter_Sec VARCHAR(100),@Excludeddatabases VARCHAR(100)
+,@tracelastrun VARCHAR(100),@eventcount VARCHAR(100),@tracestartdate VARCHAR(100),@last_event_time VARCHAR(100),@totaltraces VARCHAR(100), @default_TraceStatus VARCHAR(50)
+
+IF ((SELECT COUNT(*) FROM MASTER.SYS.TRACES WHERE is_default = 0 and [path] like '%dbatrace%' and status =1) > 0  ) 
+	SET @traceCheck = 1 ELSE SET @traceCheck = 0  
+
+IF EXISTS(SELECT * FROM MASTER.SYS.TRACES WHERE is_default = 0 and [path] like '%dbatrace%' and status = 1 )-- IS NOT NULL 
+	BEGIN
+		SELECT @eventcount =event_count, @Tracefilepath = [path],@tracelastrun= CAST (last_event_time as VARCHAR(100))
+		FROM MASTER.SYS.TRACES 
+		WHERE is_default = 0 and [path] like '%dbatrace%' and status = 1 
+		
+	END
+	ELSE 
+	BEGIN
+		SET @eventcount='0'
+		SET @Tracefilepath = 'Path Not Found'
+		SET @tracelastrun = '0'
+	END
+
+SELECT @Tracelocation = info_value FROM ADMIN.dbo.tb_info WHERE Info_Key='Current-DBA-Trace-Location'
+SELECT @Tracestartdate = start_time FROM MASTER.SYS.TRACES WHERE is_default = 0 and [path] like '%dbatrace%' and status = 1 
+SELECT @Totaltraces = count(*) from MASTER.SYS.TRACES where is_default = 0 and status =1
+SELECT @Duration_Filter_Sec = info_value FROM ADMIN.DBO.tb_info WHERE Info_Key = 'Current-DBA-Trace-Duration-Filter(ms)'
+SELECT @Excludeddatabases = Ex_DBs_Frm_Trc_Table FROM ADMIN.DBO.t_Dba_Trace_Filters 
+SELECT @default_TraceStatus = CASE WHEN (SELECT TOP 1 is_default FROM sys.traces WHERE [status] = 1 ORDER BY is_default DESC) = 1 THEN 'Yes'ELSE 'No'END
+
+INSERT INTO #Traceinfo SELECT 'Trace Enabled',@TraceCheck
+INSERT INTO #Traceinfo SELECT 'Duration Filter (ms)',@Duration_Filter_Sec
+INSERT INTO #Traceinfo SELECT 'Event Count',@Eventcount
+INSERT INTO #Traceinfo SELECT 'No of user defined Traces Running',@Totaltraces
+INSERT INTO #Traceinfo SELECT 'Is Default Trace running', @default_TraceStatus
+INSERT INTO #Traceinfo SELECT 'Trace Start Time',@Tracestartdate
+INSERT INTO #Traceinfo SELECT 'Last Event Time',@Tracelastrun
+INSERT INTO #Traceinfo SELECT 'Trace File Location',@Tracefilepath
+INSERT INTO #Traceinfo SELECT 'Excluded Databases',@Excludeddatabases
+
+update #Traceinfo 
+set Info_Value = '<B><Font color=red>' + Info_Value + '</B></Font>'
+where Name= 'Trace Enabled' and Info_Value='0'
+
+update #Traceinfo 
+set Info_Value = '<B><Font color=red>' + Info_Value + '</B></Font>'
+where Name= 'No of Traces Running' and Info_Value > 2
+
+update #Traceinfo 
+set Info_Value = '<B><Font color=red>' + Info_Value + '</B></Font>'
+where Name= 'Is Default Trace running' and Info_Value='No'
+
+
+if object_id(N'tempdb..##traceinfofinal') is not null drop table ##traceinfofinal
+
+select * into ##traceinfofinal from #Traceinfo
+SELECT * FROM ##traceinfofinal
+--Business Logic end here
+END TRY
+BEGIN CATCH	
+	EXEC p_dba_Call_SqlErrorlog @ObjectID = @@PROCID;
+END CATCH------Try Catch Block End Here
+
+IF (@sendMail =0 AND @ToEmail <>'')
+	BEGIN
+		RAISERROR('If we need to send email , we must keep the value of the parameter @sendemail as 1...', 16, 1)WITH NOWAIT;
+		RETURN
+	END
+
+IF (@sendMail =1 ) 
+BEGIN
+
+IF (@sendMail =1 AND @ToEmail ='')
+	BEGIN
+		RAISERROR('If the value of the parameter @sendemail is 1, we need to specify email address in the @ToEmail parameter 
+					else keep the @sendemail=0 and ToEmail=NULL or blank..', 16, 1)WITH NOWAIT;
+	RETURN
+	END
+
+	DECLARE @P_SERVERNAME VARCHAR(100)
+	DECLARE @Profile_Name VARCHAR(100)
+	DECLARE @p_subject AS VARCHAR(500)
+
+	DECLARE @Html AS VARCHAR(5000)
+	DECLARE @Html_Title AS VARCHAR(5000)
+	DECLARE @Html_traceTable AS VARCHAR(5000)
+	DECLARE @SQL_TEXT_trace AS VARCHAR(5000)
+
+	SELECT @P_SERVERNAME = INFO_VALUE FROM admin..TB_INFO WHERE INFO_KEY = 'SERVERNAME'
+	SELECT @Profile_Name= info_value FROM admin..[tb_info] WHERE [Info_Key]= 'Current-DBA-Profile-Name'
+	SELECT @SQL_TEXT_trace =  'SELECT * FROM #Traceinfo'
+	SELECT @p_subject =  @P_SERVERNAME +' (Report) '+ '-- Trace Information' + '('+ 'DBA Mail -'+' ' + CONVERT(VARCHAR, getdate(), 9) + ')'	
+	SELECT @Html_Title = '<html><p><u><strong><span style="background-color:#eeeeee;"> Trace Information </span></strong></u></p> <br> </body></html>'
+
+	EXECUTE  dbo.p_DBA_ConvertTableToHtml @SQL_TEXT_trace,@Html_traceTable OUTPUT   
+
+	SELECT @Html  = @Html_Title + @Html_traceTable
+	
+	SET @Html = REPLACE(@Html,'&lt;','<')
+	SET @Html = REPLACE(@Html,'&gt;','>')
+
+	EXEC msdb.dbo.SP_SEND_DBMAIL
+			@Profile_name=@Profile_Name
+			,@recipients	= @ToEmail 
+			,@subject		= @p_subject
+			,@body		= @Html
+			,@body_format = 'html'	
+
+
+END
+
+
+
+GO
+

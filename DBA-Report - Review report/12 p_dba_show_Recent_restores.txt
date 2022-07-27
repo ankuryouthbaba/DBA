@@ -1,0 +1,126 @@
+USE [Admin]
+GO
+
+/****** Object:  StoredProcedure [dbo].[p_dba_show_Recent_restores]    Script Date: 11/26/2021 9:45:53 AM ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+
+CREATE PROC [dbo].[p_dba_show_Recent_restores]
+	@SendMail BIT = 0,
+	@ToEmail VARCHAR(500)= ''
+	
+	AS
+	SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED
+	SET NOCOUNT ON
+	
+	/***********************************************INTRODUCTION***************************************************
+	Name of the Proc  : p_dba_show_Recent_restores_Beta
+	Purpose of Proc   : To monitor and know the databases which are recently restored on the server.
+	Syntax of Proc	  : EXEC p_dba_show_Recent_restores_Beta @SEndMail = 1, @ToEmail = 'Test_Email'
+	****************************************************************************************************************/
+	/***********************************************BEGIN TRY ******************************************************/
+
+	BEGIN TRY 
+
+	/*******************************************BUSINESS LOGIC STARTS***********************************************/
+	--DECLARE THE VARIABLES
+	DECLARE @P_SERVERNAME VARCHAR(100)
+	DECLARE @Profile_Name VARCHAR(100)
+	DECLARE @p_subject AS VARCHAR(500)
+	DECLARE @Html AS VARCHAR(MAX)
+	DECLARE @Html_Title AS VARCHAR(500)
+	DECLARE @Html_Days_since_last_restore AS VARCHAR(MAX)
+	DECLARE @SQL_Days_since_last_restore AS VARCHAR(MAX)
+	DECLARE @p_RowCount INT=0
+	
+    IF (OBJECT_ID('tempdb..#Database_restore_status','U')) IS NOT NULL
+    DROP TABLE #Database_restore_status
+	
+   SELECT 
+   [d].[database_name] AS [Destination_Database_Name],
+   [bs].[Server_Name] [Source_Server_Name],
+   [bs].[database_name] as [Source_Database_Name],
+   --CASE WHEN [bs].[type] ='D' THEN 'FULL'
+   --WHEN [bs].[type] ='I' THEN 'DIFFERENTIAL'
+   --WHEN [bs].[type] ='L' THEN 'LOG' END   AS Backup_Type, 
+   MAX([bs].[backup_finish_date]) AS Source_DB_Bkup_End_date,
+   MAX([rs].[restore_date]) AS Last_Restoration_Date
+   INTO #Database_restore_status 
+   FROM t_dba_databases_restore d 
+   LEFT OUTER JOIN msdb..restorehistory rs ON [d].[Database_name]=[rs].[destination_database_name]
+   LEFT OUTER JOIN msdb..backupset bs ON [bs].[backup_set_id] = [rs].[backup_set_id]
+   WHERE d.Restore_Flag=1 AND ([bs].[type] IS NULL OR [bs].[type] = 'D')
+     
+   GROUP BY [d].[database_name],
+   [bs].[Server_Name],
+   [bs].[database_name]
+   --,[bs].[type]
+   
+   
+   IF (OBJECT_ID('tempdb..#Database_restore_status_html','U')) IS NOT NULL
+   DROP TABLE #Database_restore_status_html
+       
+   SELECT ID = IDENTITY(INT,1,1),Destination_Database_Name, ISNULL(Source_Server_Name,'NOT RESTORED') AS Source_Server_Name, ISNULL(Source_Database_Name,'NOT RESTORED') AS Source_Database_Name,
+   --ISNULL(Backup_Type,'NOT RESTORED')AS Backup_Type,
+   ISNULL(Source_DB_Bkup_End_date,'') AS Source_DB_Bkup_End_date, ISNULL(Last_Restoration_Date,'') AS Last_Restoration_Date,
+   CASE WHEN DATEDIFF(d,Last_Restoration_Date,GETDATE()) > 10  THEN  '<b><font color=Red>' + CONVERT(VARCHAR(1000),DATEDIFF(d,Last_Restoration_Date,GETDATE())) + '</b></font>'
+		WHEN DATEDIFF(d,Last_Restoration_Date,GETDATE()) <= 10 THEN  CONVERT(VARCHAR(1000),DATEDIFF(d,Last_Restoration_Date,GETDATE())) 
+		WHEN DATEDIFF(d,Last_Restoration_Date,GETDATE()) IS NULL THEN '<b><font color = Red> NOT RESTORED </b></font>'
+		END AS Days_Since_Last_Restore_dt,
+   CASE WHEN DATEDIFF(d,Source_DB_Bkup_End_date,Last_Restoration_Date) > 3 THEN '<b><font color = Red>' + CONVERT(VARCHAR(10),DATEDIFF(d, Source_DB_Bkup_End_date,Last_Restoration_Date)) + '</b></font>'
+		WHEN DATEDIFF(d, Source_DB_Bkup_End_date,Last_Restoration_Date) <= 3		THEN CONVERT(VARCHAR(10),DATEDIFF(d, Source_DB_Bkup_End_date,Last_Restoration_Date))
+		WHEN DATEDIFF(d, Source_DB_Bkup_End_date,Last_Restoration_Date) IS NULL THEN '<b><font color = Red> NOT RESTORED </b></font>'
+		END AS [Days_Diff_b/w_Restore_dt_and_Backup_dt]
+   INTO #Database_restore_status_html
+   FROM #Database_restore_status
+   ORDER BY [Last_Restoration_Date] DESC
+   
+   
+   /*******************************************BUSINESS LOGIC ENDS***********************************************/
+
+   /******************************************SEND MAIL LOGIC STARTS*********************************************/
+  	
+  	SET @p_RowCount=@@ROWCOUNT
+
+	IF @SendMail = 0
+	BEGIN
+	SELECT * FROM #Database_restore_status_html
+	RETURN
+	END
+	If (@SendMail =1 AND @p_RowCount>0)
+	BEGIN
+	SELECT @P_SERVERNAME = Info_Value FROM TB_INFO WHERE Info_Key = 'SERVERNAME'
+	SELECT @Profile_Name= info_value FROM TB_INFO WHERE [Info_Key]= 'Current-DBA-Profile-Name'
+	SELECT @SQL_Days_since_last_restore =  'SELECT * FROM #Database_restore_status_html'
+	SELECT @p_subject =  @P_SERVERNAME +' (Report) '+ '--  Showing status of Database Restore ' + '('+ 'DBA Mail -'+' ' + CONVERT(VARCHAR, getdate(), 9) + ')'	
+	SELECT @Html_Title = '<html><p><u><strong><span style="background-color:#eeeeee;"> Table showing Database Restore Information </span></strong></u></p> <br> </body></html>'
+
+	EXECUTE  dbo.p_DBA_ConvertTableToHtml @SQL_Days_since_last_restore,@Html_Days_since_last_restore OUTPUT   
+
+	SELECT @Html  = @Html_Title + @Html_Days_since_last_restore
+	
+	SET @Html = REPLACE(@Html,'&lt;','<')
+	SET @Html = REPLACE(@Html,'&gt;','>')
+
+	EXEC msdb.dbo.SP_SEND_DBMAIL
+			@Profile_name	=	@Profile_Name
+			,@recipients	=	@ToEmail 
+			,@subject		=	@p_subject
+			,@body			=	@Html
+			,@body_format	=	'html'	
+	END
+	/*******************************************SEND MAIL LOGIC ENDS***********************************************/
+	END TRY
+	
+	/*******************************************BEGIN CATCH********************************************************/
+	BEGIN CATCH
+		EXEC p_dba_Call_SqlErrorlog @ObjectID = @@PROCID;
+	END CATCH
+
+GO
+

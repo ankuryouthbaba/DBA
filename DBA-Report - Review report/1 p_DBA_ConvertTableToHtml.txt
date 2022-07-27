@@ -1,0 +1,97 @@
+USE [ADMIN]
+GO
+
+/****** Object:  StoredProcedure [dbo].[p_DBA_ConvertTableToHtml]    Script Date: 11/26/2021 8:39:09 AM ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+CREATE PROCEDURE [dbo].[p_DBA_ConvertTableToHtml](
+      @SqlQuery AS NVARCHAR(4000),
+      @Html AS VARCHAR(MAX) OUTPUT
+)
+AS
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED
+      DECLARE @Header AS NVARCHAR(MAX) = ''
+      DECLARE @Column AS NVARCHAR(MAX) = ''
+      DECLARE @Query AS NVARCHAR(MAX)
+      DECLARE @Css AS VARCHAR(MAX) = '
+            <style type="text/css">
+
+            table.gridtable {
+                font-family: verdana,arial,sans-serif;
+                font-size:11px;
+                color:#333333;
+                border-width: 1px;
+                border-color: #666666;
+                border-collapse: collapse;
+            }
+
+            table.gridtable th {
+                border-width: 1px;
+                padding: 8px;
+                border-style: solid;
+                border-color: #666666;
+                background-color: #dedede;
+            }
+
+            table.gridtable td {
+                border-width: 1px;
+                padding: 8px;
+                border-style: solid;
+                border-color: #666666;
+                background-color: #ffffff;
+            }
+
+            </style>
+            '
+BEGIN
+	--/*** Added on 2015/11/25. Modified on 2015/12/2 ***/
+	--DECLARE @date varchar(100), @TableName varchar(80), @Query2 varchar(500)
+	--SET @date = replace(convert(varchar, getdate(),101),'/','') + replace(convert(varchar, getdate(), 14),':','')
+ 
+	--SET @TableName = '##columns_'+cast(@date as varchar(100))
+	--/*** Added on 2015/11/25 Modified on 2015/12/2 ***/
+	
+	
+	/*** Added on 2016/01/25.  ***/
+	DECLARE @date varchar(100), @TableName varchar(4000), @Query2 varchar(500)
+	SET @date = replace(convert(varchar(100),NEWID()),'-','')
+	
+	SET @TableName = '##columns_'+ cast(@date as varchar(max))
+	
+	/*** Added on 2016/01/25  ***/
+	
+	SET @Query = 'SELECT * INTO '+@TableName+' FROM ( ' + @SqlQuery + ') Temp'
+	EXECUTE(@Query)
+
+	SELECT @Column = @Column + 'ISNULL(' + QUOTENAME(name) +' ,'' '')' + ' AS TD, '
+	FROM tempdb.SYs.columns
+	WHERE object_id = OBJECT_ID('tempdb..'+ @TableName)       /*Modified on 2015/11/25*/
+
+	SET  @Column = LEFT(@Column,LEN(@Column)-1)
+
+	SELECT @Header = @Header + '<TH>' +  name + '</TH>'
+	FROM tempdb.SYs.columns
+	WHERE object_id = OBJECT_ID('tempdb..'+ @TableName)        /*Modified on 2015/11/25*/
+
+	SET @Header = '<TR>' + @Header  + '</TR>'
+
+	SET @Query = 'SET  @Html = (SELECT ' + @Column + ' FROM ( ' + @SqlQuery + ') AS TR
+	FOR XML AUTO ,ROOT(''TABLE''), ELEMENTS)'
+
+	EXECUTE SP_EXECUTESQL @Query,N'@Html VARCHAR(MAX) OUTPUT',@Html OUTPUT
+	SET  @Html = @Css + REPLACE(@Html,'<TABLE>' ,'<TABLE  class="gridtable">' + @Header)
+
+	SET @Query2 = 'DROP TABLE '+@TableName      /*Modified on 2015/11/25*/
+	EXECUTE (@Query2)							/*Modified on 2015/11/25*/
+ 
+	WAITFOR DELAY '00:00:01'
+END
+
+
+GO
+

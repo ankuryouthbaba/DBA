@@ -1,0 +1,33 @@
+USE [Admin]
+GO
+
+/***** Object:  Table [dbo].[t_dba_ErrorLog_Track]    Script Date: 07-12-2021 19:18:50 *****/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+CREATE TABLE [dbo].[t_dba_ErrorLog_Track](
+	[Row_Id] [int] IDENTITY(1,1) NOT NULL,
+	[DatabaseID] [int] NULL,
+	[ObjectID] [int] NULL,
+	[DatabaseName] [sysname] NOT NULL,
+	[ObjectName] [nvarchar](400) NULL,
+	[UserName] [sysname] NOT NULL,
+	[ErrorNumber] [int] NULL,
+	[ErrorSeverity] [int] NULL,
+	[ErrorState] [int] NULL,
+	[ErrorLine] [int] NULL,
+	[ErrorMessage] [nvarchar](max) NULL,
+	[Rec_Create_Dt] [datetime] NOT NULL,
+	[Rec_Update_Dt] [datetime] NOT NULL
+) ON [PRIMARY] TEXTIMAGE_ON [PRIMARY]
+GO
+
+ALTER TABLE [dbo].[t_dba_ErrorLog_Track] ADD  DEFAULT (getdate()) FOR [Rec_Create_Dt]
+GO
+
+ALTER TABLE [dbo].[t_dba_ErrorLog_Track] ADD  DEFAULT (getdate()) FOR [Rec_Update_Dt]
+GO
+

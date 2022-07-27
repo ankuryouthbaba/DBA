@@ -1,0 +1,119 @@
+USE [Admin]
+GO
+
+/****** Object:  StoredProcedure [dbo].[p_dba_show_Recent_DBCC_Checkdb]    Script Date: 11/26/2021 9:50:37 AM ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+
+
+CREATE PROC [dbo].[p_dba_show_Recent_DBCC_Checkdb]
+
+	@SendMail BIT = 0,
+	@ToEmail VARCHAR(500)= ''
+	
+	AS
+	SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED
+	SET NOCOUNT ON
+	
+	/***********************************************INTRODUCTION***************************************************
+	Name of the Proc  : p_dba_show_Recent_DBCC_Checkdb
+	Purpose of Proc   : To monitor and know the databases which recently run with successful DBCC checkdb
+	Syntax of Proc	  : EXEC p_dba_show_Recent_DBCC_Checkdb @SEndMail = 1, @ToEmail = 'Test_Email'
+	****************************************************************************************************************/
+	/***********************************************BEGIN TRY ******************************************************/
+
+	BEGIN TRY 
+
+	/*******************************************BUSINESS LOGIC STARTS***********************************************/
+	--DECLARE THE VARIABLES
+	DECLARE @P_SERVERNAME VARCHAR(100)
+	DECLARE @Profile_Name VARCHAR(100)
+	DECLARE @p_subject AS VARCHAR(500)
+	DECLARE @Html AS VARCHAR(MAX)
+	DECLARE @Html_Title AS VARCHAR(500)
+	DECLARE @Html_Days_since_last_DBCC AS VARCHAR(MAX)
+	DECLARE @SQL_Days_since_last_DBCC AS VARCHAR(MAX)
+	DECLARE @p_RowCount INT=0
+
+
+	IF OBJECT_ID(N'tempdb..#Value') is not null DROP TABLE #Value
+	IF OBJECT_ID(N'tempdb..#DBInfo') is not null DROP TABLE #DBInfo
+	IF OBJECT_ID(N'tempdb..#Valuefinal') is not null DROP TABLE #Valuefinal
+	IF OBJECT_ID(N'tempdb..##Valuefinal_html') is not null DROP TABLE ##Valuefinal_html
+
+	CREATE TABLE #DBInfo (
+       Id INT IDENTITY(1,1),
+       ParentObject VARCHAR(255),
+       [Object] VARCHAR(255),
+       Field VARCHAR(255),
+       [Value] VARCHAR(255)
+		)
+
+	CREATE TABLE #Value(
+		Database_Name VARCHAR(255),
+		Last_DBC_CCHeckDB_RunDate VARCHAR(255)
+		)
+
+	EXECUTE SP_MSFOREACHDB'INSERT INTO #DBInfo Execute (''DBCC DBINFO ( ''''?'''') WITH TABLERESULTS'');
+	INSERT INTO #Value (Database_Name) SELECT [Value] FROM #DBInfo WHERE Field IN (''dbi_dbname'');
+	UPDATE #Value SET Last_DBC_CCHeckDB_RunDate=(SELECT TOP 1 [Value] FROM #DBInfo WHERE Field IN (''dbi_dbccLastKnownGood'')) where Last_DBC_CCHeckDB_RunDate is NULL;
+	TRUNCATE TABLE #DBInfo';
+
+	SELECT dc.Database_name, v.Last_DBC_CCHeckDB_RunDate
+	,CASE WHEN DATEDIFF(DD,v.Last_DBC_CCHeckDB_RunDate,GETDATE()) > 10 THEN '<b><font color = Red>' + CONVERT(VARCHAR(50),DATEDIFF(DD,v.Last_DBC_CCHeckDB_RunDate,GETDATE())) + '</b></font>'
+		  WHEN DATEDIFF(DD,v.Last_DBC_CCHeckDB_RunDate,GETDATE()) <= 10  THEN CONVERT(VARCHAR(50),DATEDIFF(DD,v.Last_DBC_CCHeckDB_RunDate,GETDATE()))
+ 		  END AS [Days_Since_Last_DBCC_CheckDB] 	
+	INTO #Valuefinal
+	FROM t_dba_databases_checkdbcc dc
+	LEFT JOIN  #Value v ON v.Database_Name =dc.Database_name
+	ORDER BY Last_DBC_CCHeckDB_RunDate DESC
+
+	SELECT * INTO  ##Valuefinal_html FROM #Valuefinal
+
+	/*******************************************BUSINESS LOGIC ENDS***********************************************/
+
+   /******************************************SEND MAIL LOGIC STARTS*********************************************/
+  	
+  	SET @p_RowCount=@@ROWCOUNT
+
+	IF @SendMail = 0
+	BEGIN
+	SELECT * FROM #Valuefinal
+	RETURN
+	END
+	If (@SendMail =1 AND @p_RowCount>0)
+	BEGIN
+	SELECT @P_SERVERNAME = Info_Value FROM TB_INFO WHERE Info_Key = 'SERVERNAME'
+	SELECT @Profile_Name= info_value FROM TB_INFO WHERE [Info_Key]= 'Current-DBA-Profile-Name'
+	SELECT @SQL_Days_since_last_DBCC =  'SELECT * FROM #Valuefinal'
+	SELECT @p_subject =  @P_SERVERNAME +' (Report) '+ '--  Showing status of Database CheckDBCC ' + '('+ 'DBA Mail -'+' ' + CONVERT(VARCHAR, getdate(), 9) + ')'	
+	SELECT @Html_Title = '<html><p><u><strong><span style="background-color:#eeeeee;"> Table showing Database CheckDBCC Information </span></strong></u></p> <br> </body></html>'
+
+	EXECUTE  dbo.p_DBA_ConvertTableToHtml @SQL_Days_since_last_DBCC,@Html_Days_since_last_DBCC OUTPUT   
+
+	SELECT @Html  = @Html_Title + @Html_Days_since_last_DBCC
+	
+	SET @Html = REPLACE(@Html,'&lt;','<')
+	SET @Html = REPLACE(@Html,'&gt;','>')
+
+	EXEC msdb.dbo.SP_SEND_DBMAIL
+			@Profile_name	=	@Profile_Name
+			,@recipients	=	@ToEmail 
+			,@subject		=	@p_subject
+			,@body			=	@Html
+			,@body_format	=	'html'	
+	END
+	/*******************************************SEND MAIL LOGIC ENDS***********************************************/
+	END TRY
+	
+	/*******************************************BEGIN CATCH********************************************************/
+	BEGIN CATCH
+		EXEC p_dba_Call_SqlErrorlog @ObjectID = @@PROCID;
+	END CATCH
+GO
+

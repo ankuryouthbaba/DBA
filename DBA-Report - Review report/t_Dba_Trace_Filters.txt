@@ -1,0 +1,17 @@
+USE [Admin]
+GO
+
+/****** Object:  Table [dbo].[t_Dba_Trace_Filters]    Script Date: 11/26/2021 10:54:35 AM ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+CREATE TABLE [dbo].[t_Dba_Trace_Filters](
+	[Trace_Id] [int] NULL,
+	[Trace_Filter_Duration] [int] NULL,
+	[Ex_DBs_Frm_Trc_Table] [varchar](4000) NULL
+) ON [PRIMARY]
+GO
+

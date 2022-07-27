@@ -1,0 +1,174 @@
+USE [Admin]
+GO
+
+/****** Object:  StoredProcedure [dbo].[p_dba_show_indexDefraginfo]    Script Date: 11/26/2021 9:38:53 AM ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+
+CREATE   PROC [dbo].[p_dba_show_indexDefraginfo] @sendMail bit =0, @ToEmail varchar(500) = ''
+AS
+/*******************************************************************
+File Name:p_dba_show_indexDefraginfo.sql
+Proc Name:p_dba_show_indexDefraginfo
+Author   :
+History: 
+
+Create a new stored procedures to show index Defrag info
+--EXEC ADMIN..p_dba_show_indexDefraginfo  @sendMail =1, @ToEmail = 'sourabh.tiwari@corecard.com'
+**********************************************************************/
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED
+SET NOCOUNT ON
+
+--Try Catch Block Start here
+BEGIN TRY
+
+	--Business Logic start here
+IF OBJECT_ID('tempdb..#t_dba_indexDefragLog_1', 'U') IS NOT NULL
+DROP TABLE #t_dba_indexDefragLog_1
+
+IF OBJECT_ID('tempdb..#t_dba_indexDefragLog', 'U') IS NOT NULL
+DROP TABLE #t_dba_indexDefragLog
+
+	DECLARE @p_recipients VARCHAR (500)
+	SELECT @p_recipients= info_value
+	FROM [tb_info] 
+	WHERE [Info_Key]=@ToEmail
+
+	SET @p_recipients=ISNULL(@p_recipients,@ToEmail)
+
+	--SELECT @ToEmail Email_Info_Key, @p_recipients Email_List
+	CREATE TABLE #t_dba_indexDefragLog
+(
+[Date] VARCHAR(100)
+--,Page_count varchar(100)
+--,Scan_Page_count varchar(100)
+--,Defragged_Index_Count varchar(100)
+--,Start_Scan_Time varchar(100)
+--,End_Scan_time varchar(100)
+--,Total_Index_Scanned_Time varchar(100)
+--,First_Index_Defrag_Time varchar(100)
+--,Last_Index_Defrag_Date varchar(100)
+--,Scanned_Index_Count varchar(100)
+)
+
+INSERT INTO #t_dba_indexDefragLog([Date]) SELECT CONVERT(DATE,GETDATE()-7)
+INSERT INTO #t_dba_indexDefragLog([Date]) SELECT CONVERT(DATE,GETDATE()-6)
+INSERT INTO #t_dba_indexDefragLog([Date]) SELECT CONVERT(DATE,GETDATE()-5)
+INSERT INTO #t_dba_indexDefragLog([Date]) SELECT CONVERT(DATE,GETDATE()-4)
+INSERT INTO #t_dba_indexDefragLog([Date]) SELECT CONVERT(DATE,GETDATE()-3)
+INSERT INTO #t_dba_indexDefragLog([Date]) SELECT CONVERT(DATE,GETDATE()-2)
+INSERT INTO #t_dba_indexDefragLog([Date]) SELECT CONVERT(DATE,GETDATE()-1)
+INSERT INTO #t_dba_indexDefragLog([Date]) SELECT CONVERT(DATE,GETDATE())
+
+SELECT  
+IDENTITY(INT,1,1) SrNo,
+CONVERT(DATE,t.Date)[Date]
+ --,ISNULL(CONVERT(VARCHAR(24),MIN(scn.scanDate)),'NA') Start_Scan_Time
+ --,ISNULL(CONVERT(VARCHAR(24),MAX(scn.scanDate)),'NA') End_Scan_time
+ --,CASE WHEN MIN(scn.scanDate) IS NULL THEN '<b><font color=Red>'+ '0' +'</b></font>'
+ --ELSE ISNULL(CONVERT(VARCHAR(24),COUNT (1)),'0') END AS Scan_Count
+ --,ISNULL(CONVERT(VARCHAR(24),SUM(scn.page_count)),'0') AS Scan_Page_count
+  --,ISNULL   (CONVERT(VARCHAR(24),SUM(cast(scn.page_count as bigint)))   ,'0') AS Scan_Page_count
+,CASE WHEN MIN(isnull(org.dateTimeStart,'2019-10-01 07:45:20.500'))= '2019-10-01 07:45:20.500' THEN 'NA'
+--,CASE WHEN ISNULL(CONVERT(VARCHAR(24),MIN(isnull(org.dateTimeStart,'2019-10-01 07:45:20.500'))),'NA')= '2019-10-01 07:45:20.500' THEN 'NA'
+ELSE ISNULL(CONVERT(VARCHAR(24),MIN(isnull(org.dateTimeStart,'2019-10-01 07:45:20.500'))),'NA') END as Start_Defrag_Time --MIN(isnull(org.dateTimeStart,0))
+,CASE WHEN MAX(isnull(org.dateTimeStart,'2000-10-01 07:45:20.500')) = '2000-10-01 07:45:20.500' THEN 'NA'
+ELSE ISNULL(CONVERT(VARCHAR(24),MAX(isnull(org.dateTimeStart,'2000-10-01 07:45:20.500'))),'NA') END as End_Defrag_Time
+--,ISNULL(CONVERT(VARCHAR(24),MIN(org.dateTimeStart)),'NA') Start_Defrag_Time
+--,ISNULL(CONVERT(VARCHAR(24),MAX(org.dateTimeEnd)),'NA') End_Defrag_Time
+,CASE WHEN ISNULL(CONVERT(VARCHAR(24),MIN(isnull(CONVERT(VARCHAR(24),org.dateTimeStart),'NA'))),'NA') = 'NA' THEN '<b><font color=Red>'+ '0' +'</b></font>'
+--,CASE WHEN MIN(org.dateTimeStart) IS NULL THEN '<b><font color=Red>'+ '0' +'</b></font>'
+ ELSE ISNULL(CONVERT(VARCHAR(24),COUNT (1)),'0') END AS Count_Indexes_Defragged
+-- --,ISNULL(CONVERT(VARCHAR(24),SUM(org.page_count)),'0') AS Defrag_Page_count 
+ ,CASE WHEN ISNULL(CONVERT(VARCHAR(24),SUM(cast(ISNULL(org.page_count,0) as bigint))),'0') = 0 THEN '<b><font color=Red>'+ '0' +'</b></font>'
+ ELSE ISNULL(CONVERT(VARCHAR(24),SUM(cast(ISNULL(org.page_count,0) as bigint))),'0') END AS Count_Pages_Defragged
+---- ,CASE WHEN ISNULL(CONVERT(VARCHAR(24),DATEDIFF(Minute,MIN(scn.scanDate),MAX(scn.scanDate))),'0')= '0' 
+----THEN '<b><font color=Red>'+ ISNULL(CONVERT(VARCHAR(24),DATEDIFF(Minute,MIN(scn.scanDate),MAX(scn.scanDate))),'0') +'</b></font>'
+----ELSE ISNULL(CONVERT(VARCHAR(24),DATEDIFF(Minute,MIN(scn.scanDate),MAX(scn.scanDate))),'0') END AS [Total_Scan_Time(Min)]
+,CASE WHEN ISNULL(CONVERT(VARCHAR(24),DATEDIFF(Minute,MIN(ISNULL(org.dateTimeStart,0)),MAX(ISNULL(org.dateTimeEnd,0)))),'0')= '0' 
+THEN '<b><font color=Red>'+ ISNULL(CONVERT(VARCHAR(24),DATEDIFF(Minute,MIN(ISNULL(org.dateTimeStart,0)),MAX(ISNULL(org.dateTimeEnd,0)))),'0') +'</b></font>'
+ELSE ISNULL(CONVERT(VARCHAR(24),DATEDIFF(Minute,MIN(ISNULL(org.dateTimeStart,0)),MAX(ISNULL(org.dateTimeEnd,0)))),'0') END AS [Total_Defrag_Time(Min)]
+--,CASE WHEN ISNULL(CONVERT(VARCHAR(24),DATEDIFF(Minute,MIN(ISNULL(org.dateTimeStart,0)),MAX(ISNULL(org.dateTimeEnd,0)))),'0')= '0' 
+--THEN '<b><font color=Red>'+ ISNULL(CONVERT(VARCHAR(24),DATEDIFF(Minute,MIN(org.dateTimeStart),MAX(org.dateTimeEnd))),'0') +'</b></font>'
+--ELSE ISNULL(CONVERT(VARCHAR(24),DATEDIFF(Minute,MIN(org.dateTimeStart),MAX(org.dateTimeEnd))),'0') END AS [Total_Defrag_Time(Min)]
+INTO #t_dba_indexDefragLog_1
+FROM #t_dba_indexDefragLog t
+LEFT JOIN t_dba_indexDefragLog org ON CONVERT(DATE,t.[Date])= CONVERT(DATE,ISNULL(org.dateTimeEnd,0))--CONVERT(DATE,org.dateTimeEnd)--CONVERT(DATE,ISNULL(CONVERT(DATE,org.dateTimeEnd),0))
+--full join t_DBA_IndexScan_Status_Log scn ON t.[Date] =  CONVERT(DATE,scn.scanDate)
+WHERE CONVERT(DATE,[Date])> CONVERT(DATE,GETDATE()-7) 
+GROUP BY CONVERT(DATE,t.[Date])
+ORDER BY CONVERT(DATE,t.[Date]) DESC
+
+--UPDATE #t_dba_indexDefragLog_1
+--SET Count_Indexes_Defragged = 0 WHERE [Total_Defrag_Time(Min)] = 0
+--UPDATE #t_dba_indexDefragLog_1
+--SET Count_Pages_Defragged = 0 WHERE [Total_Defrag_Time(Min)] = 0
+--UPDATE #t_dba_indexDefragLog_1
+--SET [Total_Defrag_Time(Min)] = 0 WHERE [Total_Defrag_Time(Min)] = 0
+
+SELECT * FROM #t_dba_indexDefragLog_1
+
+--Business Logic end here
+END TRY
+BEGIN CATCH	
+	EXEC p_dba_Call_SqlErrorlog @ObjectID = @@PROCID;
+END CATCH------Try Catch Block End Here
+
+IF (@sendMail =0 AND @ToEmail <>'')
+	BEGIN
+		RAISERROR('If we need to send email , we must keep the value of the parameter @sendemail as 1...', 16, 1)WITH NOWAIT;
+		RETURN
+	END
+
+IF (@sendMail =1 ) 
+
+BEGIN
+
+IF (@sendMail =1 AND @ToEmail ='')
+	BEGIN
+		RAISERROR('If the value of the parameter @sendemail is 1, we need to specify email address in the @ToEmail parameter 
+					else keep the @sendemail=0 and ToEmail=NULL or blank..', 16, 1)WITH NOWAIT;
+	RETURN
+	END
+
+	DECLARE @P_SERVERNAME VARCHAR(100)
+	DECLARE @Profile_Name VARCHAR(100)
+	DECLARE @p_subject AS VARCHAR(500)
+
+	DECLARE @Html AS VARCHAR(5000)
+	DECLARE @Html_Title AS VARCHAR(5000)
+	DECLARE @Html_indexTable AS VARCHAR(5000)
+	DECLARE @SQL_TEXT_index AS VARCHAR(5000)
+
+	SELECT @P_SERVERNAME = INFO_VALUE FROM TB_INFO WHERE INFO_KEY = 'SERVERNAME'
+	SELECT @Profile_Name= info_value FROM [tb_info] WHERE [Info_Key]= 'Current-DBA-Profile-Name'
+	SELECT @SQL_TEXT_index =  'SELECT * FROM #t_dba_indexDefragLog_1'
+	SELECT @p_subject =  @P_SERVERNAME +' (Report) '+ '-- Indexes Scanned and Defragged Status ' + '('+ 'DBA Mail -'+' ' + CONVERT(VARCHAR, getdate(), 9) + ')'	
+	SELECT @Html_Title = '<html><p><u><strong><span style="background-color:#eeeeee;"> Number of the Indexes Scanned and Defragged Status (last 7 days)</span></strong></u></p> <br> </body></html>'
+	
+
+	
+
+	EXECUTE  dbo.p_DBA_ConvertTableToHtml @SQL_TEXT_index,@Html_indexTable OUTPUT   
+
+	SELECT @Html  = @Html_Title + @Html_indexTable
+	
+	SET @Html = REPLACE(@Html,'&lt;','<')
+	SET @Html = REPLACE(@Html,'&gt;','>')
+	
+	EXEC msdb.dbo.SP_SEND_DBMAIL
+			@Profile_name=@Profile_Name
+			,@recipients	= @ToEmail 
+			,@subject		= @p_subject
+			,@body		= @Html
+			,@body_format = 'html'	
+
+
+END
+GO
+

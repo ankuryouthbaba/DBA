@@ -1,0 +1,121 @@
+USE [ADMIN]
+GO
+
+/****** Object:  StoredProcedure [dbo].[p_dba_Show_Top_memory_clerks_usage]    Script Date: 11/29/2021 4:29:01 AM ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+
+
+
+CREATE  PROC [dbo].[p_dba_Show_Top_memory_clerks_usage]
+@TopRecords SMALLINT = 10
+,@SendMail BIT = 0
+,@ToEmail VARCHAR(100)=''
+AS
+/*************************************************************************
+** Name:p_dba_Show_Top_memory_clerks_usage_beta
+** Desc:p_dba_Show_Top_memory_clerks_usage_beta report proc
+**************************************************************************
+**History
+**************************************************************************
+1. Create new proc to monotor the memory utilization of the server.
+
+EXEC Admin..p_dba_Show_Top_memory_clerks_usage_beta@SendMail=0,@ToEmail='jagpal.singh@scalabilityengineers.com'
+
+**************************************************************************/
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED
+SET NOCOUNT ON
+
+--Try Catch Block Start here
+ BEGIN TRY
+IF (OBJECT_ID('tempdb..#Memory_Utilization','U')) IS NOT NULL
+  DROP TABLE [#Memory_Utilization]
+
+--Business logic start here 
+
+CREATE TABLE [dbo].[#Memory_Utilization]
+(
+	[SrNo] INT IDENTITY(1,1) NOT NULL,
+	[TYPE] [nvarchar](60) NOT NULL, [Name] [varchar](100) NOT NULL, 
+	[Memory utilized in MB] [bigint] NULL,
+	[Memory allocated though Windows API] [bigint] NULL
+) 
+
+	INSERT INTO [#Memory_Utilization] 
+	(
+	[TYPE], Name,
+	[Memory utilized in MB],
+	[Memory allocated though Windows API]
+	)
+	SELECT TOP (@TopRecords) TYPE, NAME,
+	--SUM(pages_kb)/1024 AS [Memory utilized in MB],--for sql 2016
+	SUM(page_size_bytes)/1024 AS [Memory utilized in MB],	--for sql 2008
+	SUM(awe_allocated_kb)/1024 AS [Memory allocated though Windows API]
+	FROM SYS.DM_OS_MEMORY_CLERKS
+	GROUP BY TYPE, NAME
+	ORDER BY [Memory utilized in MB] DESC
+
+--Business logic Ends here 
+
+--Send email logic starts here 
+
+  SELECT * from 	[#Memory_Utilization]
+  
+  if OBJECT_ID(N'tempdb..##Memory_Utilization_final') is not null drop table ##Memory_Utilization_final
+  select * into ##Memory_Utilization_final from #Memory_Utilization
+
+IF @sendMail=1
+	BEGIN					
+		DECLARE @Html AS VARCHAR(MAX)
+		DECLARE @p_recipients AS VARCHAR(5000)
+		DECLARE @Profile_Name SYSNAME
+		DECLARE @P_SERVERNAME AS VARCHAR(100)
+		SELECT @P_SERVERNAME = INFO_VALUE FROM Admin..TB_INFO WHERE INFO_KEY = 'SERVERNAME'
+							
+		SELECT @p_recipients= info_value
+		FROM [tb_info] 
+			WHERE [Info_Key]=
+				CASE @ToEmail
+				WHEN 'APP_ADMIN' THEN 'APP-Admin-Email-List'
+				WHEN 'DBA_ADMIN' THEN 'DBA-Admin-Email-List'
+				WHEN 'DBA_TEST'	 THEN 'DBA-Test-Email-List'
+				WHEN 'SE_DBA_Admin' THEN 'SE-DBA-Admin'
+				WHEN 'SE_App_Admin' THEN 'SE-App-Admin'
+				END
+		
+			SELECT @p_recipients = ISNULL(@p_recipients,@ToEmail) 
+			 
+				
+			SELECT @Profile_Name= info_value
+			FROM [tb_info] 
+			WHERE [Info_Key]= 'Current-DBA-Profile-Name'
+					
+			DECLARE @p_subject AS VARCHAR(5000)= @P_SERVERNAME +' (Alert) -- Top 10 Memory Utilization by Objects '+ '(DBA Mail - '+ CONVERT(VARCHAR, getdate(), 9) + ')'
+			DECLARE @SQLText AS VARCHAR(5000)=  'SELECT TOP (100) PERCENT * FROM [#Memory_Utilization] ORDER BY [SrNo] ASC'
+			EXECUTE p_DBA_ConvertTableToHtml @SQLText,@Html OUTPUT
+			
+			SET @Html = REPLACE(@Html,'&lt;','<')
+			SET @Html = REPLACE(@Html,'&gt;','>')
+		
+			EXEC msdb..sp_send_dbmail
+				 @recipients	= @p_recipients 
+				,@Profile_name  = @Profile_Name
+				,@subject	= @p_subject
+				,@body		= @Html
+				,@body_format	= 'html'
+				,@importance	= 'Normal'
+
+     END
+END TRY
+BEGIN CATCH	
+	EXEC p_dba_Call_SqlErrorlog @ObjectID = @@PROCID;
+
+END CATCH----Try Catch Block End Here
+
+GO
+

@@ -1,0 +1,140 @@
+USE [Admin]
+GO
+
+/****** Object:  StoredProcedure [dbo].[p_dba_show_Deadlockinfo]    Script Date: 11/26/2021 9:37:30 AM ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+CREATE PROC [dbo].[p_dba_show_Deadlockinfo] @sendMail bit =0, @ToEmail varchar(500) = ''
+AS
+/*******************************************************************
+File Name:p_dba_show_Deadlockinfo_beta.sql
+Proc Name:p_dba_show_Deadlockinfo_beta
+Author   :
+History: 
+
+Create a new stored procedures to show Deadlock info
+--EXEC ADMIN..p_dba_show_Deadlockinfo_beta  @sendMail =1, @ToEmail = ''
+**********************************************************************/
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED
+SET NOCOUNT ON
+
+--Try Catch Block Start here
+BEGIN TRY
+
+	--Business Logic start here
+
+
+IF OBJECT_ID('tempdb..#deadlockcheck', 'U') IS NOT NULL
+DROP TABLE #deadlockcheck
+
+DECLARE @deadlockname varchar(100),@deadlockroute varchar(100)= 'Deadlock_Route',@deadlockroutestatus varchar(100),@deadlockEventNotification varchar(100) ='Event_Notification'
+,@deadlockEventNotificationstatus varchar(100), @deadlockservice varchar(100)='Deadlock_Service', @deadlockservicestatus varchar(100),@deadlocklastdate varchar(100)='Last_Deadlock_Date'
+,@deadlocklastdatestatus varchar(100)
+ 
+CREATE TABLE #deadlockcheck ([Check_ID] INT IDENTITY,[Check_Name] varchar(1000),[Value] VARCHAR(100) )
+
+IF (SELECT [name]  FROM ADMIN.[sys].[routes] WHERE [name] like 'R_dba_DeadLockNotificationRoute') is not null
+	SET @deadlockroutestatus = 1
+	ELSE
+	SET @deadlockroutestatus = 0
+
+IF (SELECT [name] FROM [master].[sys].[server_event_notifications] where [name] like '%N_dba_DeadLockNotificationEvent%') is not null
+	SET @deadlockEventNotificationstatus = 1
+	ELSE
+	SET @deadlockEventNotificationstatus = 0
+
+IF (SELECT [service_name] FROM [master].[sys].[server_event_notifications] WHERE [name] like '%N_dba_DeadLockNotificationEvent%') is not null
+	SET @deadlockservicestatus = 1
+	ELSE
+	SET @deadlockservicestatus = 0
+	
+declare @deadlockdate as table (eventdate varchar(100))
+
+insert into @deadlockdate
+exec ('SELECT TOP 1 [EventDate]
+from  admin.dbo.t_Dba_DeadlockEvents ORDER BY DeadlockID DESC') 
+
+select @deadlocklastdatestatus = eventdate from @deadlockdate
+
+INSERT INTO #deadlockcheck
+SELECT @deadlockroute,@deadlockroutestatus
+
+INSERT INTO #deadlockcheck
+SELECT @deadlockEventNotification,@deadlockEventNotificationstatus
+
+INSERT INTO #deadlockcheck
+SELECT @deadlockservice ,@deadlockservicestatus
+
+INSERT INTO #deadlockcheck
+SELECT @deadlocklastdate,@deadlocklastdatestatus 
+
+UPDATE #deadlockcheck
+SET [Value]='<B><Font color=red>' + [Value] + '</B></Font>'
+WHERE [Value] = '0'
+
+IF OBJECT_ID('tempdb..##deadlock_info', 'U') IS NOT NULL
+DROP TABLE ##deadlock_info
+
+SELECT * INTO ##deadlock_info
+FROM #deadlockcheck
+SELECT * FROM ##deadlock_info
+
+--Business Logic end here
+
+END TRY
+BEGIN CATCH	
+	EXEC p_dba_Call_SqlErrorlog @ObjectID = @@PROCID;
+END CATCH------Try Catch Block End Here
+
+IF (@sendMail =0 AND @ToEmail <>'')
+	BEGIN
+		RAISERROR('If we need to send email , we must keep the value of the parameter @sendemail as 1...', 16, 1)WITH NOWAIT;
+		RETURN
+	END
+
+IF (@sendMail =1 ) 
+
+BEGIN
+
+IF (@sendMail =1 AND @ToEmail ='')
+	BEGIN
+		RAISERROR('If the value of the parameter @sendemail is 1, we need to specify email address in the @ToEmail parameter 
+					else keep the @sendemail=0 and ToEmail=NULL or blank..', 16, 1)WITH NOWAIT;
+	RETURN
+	END
+
+	DECLARE @P_SERVERNAME VARCHAR(100)
+	DECLARE @Profile_Name VARCHAR(100)
+	DECLARE @p_subject AS VARCHAR(500)
+
+	DECLARE @Html AS VARCHAR(5000)
+	DECLARE @Html_Title AS VARCHAR(5000)
+	DECLARE @Html_DeadlockTable AS VARCHAR(5000)
+	DECLARE @SQL_TEXT_deadlock AS VARCHAR(5000)
+
+	SELECT @P_SERVERNAME = INFO_VALUE FROM admin..TB_INFO WHERE INFO_KEY = 'SERVERNAME'
+	SELECT @Profile_Name= info_value FROM admin..[tb_info] WHERE [Info_Key]= 'Current-DBA-Profile-Name'
+	SELECT @SQL_TEXT_deadlock =  'SELECT * FROM #deadlockcheck'
+	SELECT @p_subject =  @P_SERVERNAME +' (Report) '+ '-- Deadlock Status' + '('+ 'DBA Mail -'+' ' + CONVERT(VARCHAR, getdate(), 9) + ')'	
+	SELECT @Html_Title = '<html><p><u><strong><span style="background-color:#eeeeee;"> Deadlock Status </span></strong></u></p> <br> </body></html>'
+
+	EXECUTE  dbo.p_DBA_ConvertTableToHtml @SQL_TEXT_deadlock,@Html_DeadlockTable OUTPUT   
+
+	SELECT @Html  = @Html_Title + @Html_DeadlockTable
+	SET @Html = REPLACE(@Html,'&lt;','<')
+	SET @Html = REPLACE(@Html,'&gt;','>')
+	EXEC msdb.dbo.SP_SEND_DBMAIL
+			@Profile_name=@Profile_Name
+			,@recipients	= @ToEmail 
+			,@subject		= @p_subject
+			,@body		= @Html
+			,@body_format = 'html'	
+
+END
+GO
+

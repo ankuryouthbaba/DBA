@@ -1,0 +1,131 @@
+USE [Admin]
+GO
+
+/****** Object:  StoredProcedure [dbo].[p_dba_show_Counterdata]    Script Date: 11/26/2021 9:40:54 AM ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+
+CREATE   PROC [dbo].[p_dba_show_Counterdata] @sendMail bit =0, @ToEmail varchar(500) = ''
+AS
+/*******************************************************************
+File Name:p_dba_show_Counterdata.sql
+Proc Name:p_dba_Counterdata
+Author   :
+History: 
+
+Create a new stored procedures for reflecting Counter data count
+--EXEC ADMIN..p_dba_show_Counterdata  @sendMail = 1,@ToEmail = 'amit.pandey.dba123@gmail.com'
+**********************************************************************/
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED
+SET NOCOUNT ON
+
+--Try Catch Block Start here
+BEGIN TRY
+
+	--Business Logic start here
+
+IF OBJECT_ID('tempdb..##finalcounterinsert1', 'U') IS NOT NULL
+DROP TABLE ##finalcounterinsert1
+
+IF OBJECT_ID('tempdb..#tempcounterinsert', 'U') IS NOT NULL
+DROP TABLE #tempcounterinsert
+
+IF OBJECT_ID('tempdb..#finalcounterinsert', 'U') IS NOT NULL
+DROP TABLE #finalcounterinsert
+
+Declare @maxcounter INT,@mincounterper INT ='10',@counterlow INT,@excepthour as varchar(100),@final INT
+
+;with CTE 
+AS
+(
+SELECT CONVERT(DATE,left(CounterDateTime,10) ) [DATE_],
+ datepart(hh, convert(datetime,LEFT(convert(varchar,CounterDateTime,20),19))) [HOUR_] 
+FROM sn_counterdata 
+--WHERE SUBSTRING(CounterDateTime,1,13) > SUBSTRING(CONVERT(VARCHAR,DATEADD(hh, -25, GETDATE()),20),1,13)
+WHERE CounterDateTime > STUFF(CONVERT(CHAR(13), DATEADD(hh, -25, GETDATE()), 120), 11, 1, ' ')
+
+)
+
+SELECT [DATE_],[HOUR_], COUNT(*) Row_Count
+INTO #tempcounterinsert
+from CTE
+GROUP BY  [DATE_], [HOUR_]
+ORDER BY [DATE_] DESC, [HOUR_] DESC
+	
+SELECT @maxcounter = max(Row_Count) FROM #tempcounterinsert
+SELECT @counterlow = (@maxcounter*@mincounterper)/100  
+SET @final=@maxcounter - @counterlow
+ 
+select @excepthour=datepart(HOUR,GETDATE())
+
+SELECT cast([Date_] AS VARCHAR(50))AS [Date_],cast([hour_] AS VARCHAR(50))AS [hour_]
+,cast([Row_Count] AS VARCHAR(50))AS [Row_Count]
+INTO #finalcounterinsert
+FROM #tempcounterinsert
+where NOT([Date_] = CAST(GETDATE() as DATE) and [hour_] = @excepthour)
+
+UPDATE #finalcounterinsert
+SET[Row_Count]='<B><Font color=red>' + CONVERT(VARCHAR(100),[Row_Count]) + '</B></Font>'
+WHERE [Row_Count] < @final
+
+SELECT * FROM #finalcounterinsert
+
+--Business Logic end here
+END TRY
+BEGIN CATCH	
+	EXEC p_dba_Call_SqlErrorlog @ObjectID = @@PROCID;
+END CATCH------Try Catch Block End Here
+
+IF (@sendMail =0 AND @ToEmail <>'')
+	BEGIN
+		RAISERROR('If we need to send email , we must keep the value of the parameter @sendemail as 1...', 16, 1)WITH NOWAIT;
+		RETURN
+	END
+
+IF (@sendMail =1 ) 
+
+BEGIN
+
+IF (@sendMail =1 AND @ToEmail ='')
+	BEGIN
+		RAISERROR('If the value of the parameter @sendemail is 1, we need to specify email address in the @ToEmail parameter 
+					else keep the @sendemail=0 and ToEmail=NULL or blank..', 16, 1)WITH NOWAIT;
+	RETURN
+	END
+
+	DECLARE @P_SERVERNAME VARCHAR(100)
+	DECLARE @Profile_Name VARCHAR(100)
+	DECLARE @p_subject AS VARCHAR(500)
+
+	DECLARE @Html AS VARCHAR(5000)
+	DECLARE @Html_Title AS VARCHAR(5000)
+	DECLARE @Html_counterTable AS VARCHAR(5000)
+	DECLARE @SQL_TEXT_counter AS VARCHAR(5000)
+
+	SELECT @P_SERVERNAME = INFO_VALUE FROM TB_INFO WHERE INFO_KEY = 'SERVERNAME'
+	SELECT @Profile_Name= info_value FROM [tb_info] WHERE [Info_Key]= 'Current-DBA-Profile-Name'
+	SELECT @SQL_TEXT_counter =  'SELECT * FROM #finalcounterinsert'
+	SELECT @p_subject =  @P_SERVERNAME +' (Report) '+ '-- Performance counters Data' + '('+ 'DBA Mail -'+' ' + CONVERT(VARCHAR, getdate(), 9) + ')'	
+	SELECT @Html_Title = '<html><p><u><strong><span style="background-color:#eeeeee;">Last 24 Hours of Performance counters Data </span></strong></u></p> <br> </body></html>'
+
+	EXECUTE  dbo.p_DBA_ConvertTableToHtml @SQL_TEXT_counter,@Html_counterTable OUTPUT   
+
+	SELECT @Html  = @Html_Title + @Html_counterTable
+
+	EXEC msdb.dbo.SP_SEND_DBMAIL
+			@Profile_name=@Profile_Name
+			,@recipients	= @ToEmail 
+			,@subject		= @p_subject
+			,@body		= @Html
+			,@body_format = 'html'	
+
+
+END
+
+GO
+

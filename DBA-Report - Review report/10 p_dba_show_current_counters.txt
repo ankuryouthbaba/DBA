@@ -1,0 +1,54 @@
+USE [Admin]
+GO
+
+ Object  StoredProcedure [dbo].[p_dba_show_current_counters]    Script Date 11262021 94218 AM 
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+CREATE   PROC [dbo].[p_dba_show_current_counters] @FromDate DATETIME = null , @ToDate datetime = null
+AS
+-- Query to show what all counters we are collecting for a particular server. 
+--
+--Name of the Proc   p_dba_show_current_counters
+--Purpose of Proc    Query to show what all counters we are collecting for a particular server. 
+--Syntax of Proc	 Exec p_dba_show_current_counter, FromDate = null, To_date = Null 				  
+--
+--DECLARE @FromDate DATETIME = '2017-11-19 003800.000', @ToDate datetime = '2017-11-19 004000.000'
+
+DECLARE @P_FromDate DATETIME = isnull(@FromDate, DATEADD(minute, -30, CURRENT_TIMESTAMP)
+), @P_ToDate datetime = isnull (@ToDate, GETDATE())
+
+--SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED
+--SET NOCOUNT ON
+
+BEGIN TRY
+--BEGIN TRY
+
+BUSINESS LOGIC STARTS
+
+SELECT   objectName, CounterName ,isnull(InstanceName, 'NA') as InstanceName
+FROM  CounterDetails cdt
+INNER JOIN dbo.sn_counterdata cd ON cdt.CounterID = cd.CounterID 
+WHERE counterdatetime BETWEEN CONVERT(VARCHAR,@p_fromDate,20)  AND CONVERT(VARCHAR,@p_toDate,20)
+ --AND Objectname not IN ('SQLServerLocks','Network Interface') -- we might want to exclude a few objects
+group by objectName, CounterName , InstanceName--AND Objectname = 'processor' 
+--and countername = 'Page life expectancy'
+ORDER BY 1 DESC
+--BUSINESS LOGIC ENDS
+
+END TRY
+--END TRY
+
+----BEGIN CATCH
+
+--BEGIN CATCH	
+--	EXEC p_dba_Call_SqlErrorlog @ObjectID = @@PROCID;
+--END CATCH
+
+----END CATCH
+GO
+
