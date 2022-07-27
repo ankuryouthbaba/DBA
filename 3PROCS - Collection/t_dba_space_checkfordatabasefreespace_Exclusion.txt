@@ -1,0 +1,17 @@
+USE [admin]
+GO
+
+/***** Object:  Table [dbo].[t_dba_space_checkfordatabasefreespace_exclusion]    Script Date: 16-12-2021 14:05:01 *****/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+CREATE TABLE [dbo].[t_dba_space_checkfordatabasefreespace_exclusion](
+	[File Name] [varchar](100) NULL,
+	[Database Name] [sysname] NOT NULL,
+	[Included_Excluded] [bit] NOT NULL
+) ON [PRIMARY]
+GO
+
