@@ -1,0 +1,5 @@
+
+
+select * from t_dba_trc_traceload_info
+
+select * from t_dba_trc_master_tracedata

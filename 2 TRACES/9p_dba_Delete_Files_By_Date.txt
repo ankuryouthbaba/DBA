@@ -1,0 +1,223 @@
+USE [ADMIN]
+GO
+
+/****** Object:  StoredProcedure [dbo].[p_dba_Delete_Files_By_Date]    Script Date: 11/30/2021 5:02:54 AM ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+
+CREATE PROCEDURE [dbo].[p_dba_Delete_Files_By_Date] 
+ @SendMail BIT=0
+,@ToEmail varchar(500)=''
+,@FileExtension VARCHAR(512)
+,@DaysToKeep INT
+
+AS
+/******************************************************************************
+**
+**Name: p_dba_Delete_Files_By_Date.sql
+**
+**Description: Delete files older than X-days based on path & extension.
+**
+EXEC Admin.DBO.p_dba_Delete_Files_By_Date
+ @SendMail=1
+,@ToEmail=''
+,@FileExtension='trc'
+,@DaysToKeep=31
+
+**
+**Return values: 0 - Success
+**-1 - Error
+******************************************************************************/
+SET NOCOUNT ON
+
+Declare @p_servername varchar(500)
+select @p_servername = info_value from admin..tb_info where info_key = 'ServerName'
+DECLARE @CurrentFileDate CHAR(10)
+, @OldFileDate CHAR(10)
+, @SourceDirFOR VARCHAR(255)
+, @FileName VARCHAR(512)
+, @DynDelete VARCHAR(512)
+, @ProcessName VARCHAR(150)
+, @OSVersion DECIMAL(3,1)
+, @Error INT
+, @SourceDir VARCHAR(1024)
+
+
+/*Drop temp tables if exists.*/
+
+IF OBJECT_ID('tempdb.dbo.#_File_Details_01', 'U') IS NOT NULL
+DROP TABLE #_File_Details_01
+IF OBJECT_ID('tempdb.dbo.#_File_Details_02', 'U') IS NOT NULL
+DROP TABLE #_File_Details_02
+IF OBJECT_ID('tempdb.dbo.#_DeleteOldFile', 'U') IS NOT NULL
+DROP TABLE #_DeleteOldFile
+IF OBJECT_ID('tempdb.dbo.#_File_Details_01_AfterPurged', 'U') IS NOT NULL
+DROP TABLE #_File_Details_01_AfterPurged
+IF OBJECT_ID('tempdb.dbo.#_File_Details_02_AfterPurged', 'U') IS NOT NULL
+DROP TABLE #_File_Details_02_AfterPurged
+IF OBJECT_ID('tempdb.dbo.#_DeleteOldFile_AfterPurged', 'U') IS NOT NULL
+DROP TABLE #_DeleteOldFile_AfterPurged
+IF OBJECT_ID('tempdb.dbo.#_Result', 'U') IS NOT NULL
+DROP TABLE #_Result
+
+
+
+SELECT @SourceDir=info_value FROM [dbo].[tb_info] WHERE [Info_Key]='Current-DBA-Trace-Location'
+SET @FileExtension= '*.'+@FileExtension
+
+SET @ProcessName = 'p_dba_Delete_Files_By_Date - [' + @FileExtension + ']'
+SET @CurrentFileDate = CONVERT(CHAR(10),GETDATE(),121)
+SET @OldFileDate = CONVERT(CHAR(10),DATEADD(dd,-@DaysToKeep,@CurrentFileDate),121)
+SET @SourceDirFOR = 'FOR %I IN ("' + @SourceDir + @FileExtension + '") DO @ECHO %~nxtI'
+SET @Error = 0
+
+-- Start temp table population(s).
+CREATE TABLE #_File_Details_01
+( Ident INT IDENTITY(1,1)
+, OUTPUT VARCHAR(512) )
+
+INSERT INTO #_File_Details_01
+EXEC MASTER..XP_CMDSHELL @SourceDirFOR
+
+CREATE TABLE #_File_Details_02
+(Ident INT
+, [TimeStamp] DATETIME
+, [FileName] VARCHAR(255) )
+
+INSERT INTO #_File_Details_02
+SELECT Ident
+, CONVERT(CHAR(10), SUBSTRING([Output],1,10), 121) AS [TimeStamp]
+, SUBSTRING([Output],21,255) AS [FileName]
+FROM #_File_Details_01
+WHERE [Output] IS NOT NULL
+ORDER BY Ident
+
+SELECT Ident AS SrNo,[FileName],CONVERT(CHAR(10),[TimeStamp],121) AS [Date],@SourceDir AS FileDir
+INTO #_DeleteOldFile
+FROM #_File_Details_02 WHERE [TimeStamp] <= @OldFileDate
+ORDER BY [TimeStamp] DESC
+
+
+-- Start delete ops cursor.
+DECLARE curDelFile CURSOR
+READ_ONLY
+FOR
+SELECT [FileName]
+FROM #_File_Details_02
+WHERE [TimeStamp] <= @OldFileDate
+
+OPEN curDelFile
+FETCH NEXT FROM curDelFile INTO @FileName
+WHILE (@@FETCH_STATUS <> -1)
+BEGIN
+IF (@@FETCH_STATUS <> -2)
+BEGIN
+
+SET @DynDelete = 'DEL /Q "' + @SourceDir + @FileName + '"'
+
+EXEC MASTER..XP_CMDSHELL @DynDelete
+
+END
+FETCH NEXT FROM curDelFile INTO @FileName
+END
+
+CLOSE curDelFile
+DEALLOCATE curDelFile
+
+-- Start temp table population(s) After Purged the old files.
+CREATE TABLE #_File_Details_01_AfterPurged
+( Ident INT IDENTITY(1,1)
+, OUTPUT VARCHAR(512) )
+
+INSERT INTO #_File_Details_01_AfterPurged
+EXEC MASTER..XP_CMDSHELL @SourceDirFOR
+
+CREATE TABLE #_File_Details_02_AfterPurged
+(Ident INT
+, [TimeStamp] DATETIME
+, [FileName] VARCHAR(255) )
+
+INSERT INTO #_File_Details_02_AfterPurged
+SELECT Ident
+, CONVERT(CHAR(10), SUBSTRING([Output],1,10), 121) AS [TimeStamp]
+, SUBSTRING([Output],21,255) AS [FileName]
+FROM #_File_Details_01_AfterPurged
+WHERE [Output] IS NOT NULL
+ORDER BY Ident
+
+
+SELECT Ident AS SrNo,[FileName],CONVERT(CHAR(10),[TimeStamp],121) AS [Date],@SourceDir AS FileDir
+INTO #_DeleteOldFile_AfterPurged
+FROM #_File_Details_02_AfterPurged WHERE [TimeStamp] <= @OldFileDate
+ORDER BY [TimeStamp] DESC
+
+
+SELECT SrNo,[FileName],[Date],FileDir 
+INTO #_Result FROM #_DeleteOldFile
+WHERE [FileName] NOT IN (SELECT [FileName] FROM #_DeleteOldFile_AfterPurged)
+ORDER BY SrNo ASC
+
+
+/*First HTML Block Starts: Tempdb Query Details*/
+		
+		DECLARE @Html_1 AS VARCHAR(MAX),@Profile_Name sysname
+		DECLARE @HtmlFillerTable VARCHAR(MAX)='<HTML><BR><BR></HTML>'
+		DECLARE @HtmlFirstTable_Title AS VARCHAR(MAX) = 
+		--<strong><span style="background-color:#eeeeee;">
+		'<html><p><u>
+		Please find the details of old purged files from server.		
+		<BR>
+		</u></p></body></html>'
+		--</span></strong>
+		DECLARE @SQLText_1 AS VARCHAR(5000)=  'SELECT * FROM #_Result'
+		EXECUTE p_DBA_ConvertTableToHtml @SQLText_1,@Html_1 OUTPUT
+		
+		SET @Html_1=@HtmlFirstTable_Title + @HtmlFillerTable+@Html_1
+						DECLARE @p_recipients AS VARCHAR(5000)
+				SELECT @p_recipients= info_value
+				FROM [tb_info] 
+				WHERE [Info_Key]=@ToEmail
+				SET @p_recipients = ISNULL(@p_recipients, @ToEmail)
+				Select @ToEmail, @p_recipients
+
+IF @SendMail=1
+	BEGIN
+			DECLARE @p_subject VARCHAR(500)
+			--@p_ServerName VARCHAR(500),
+			--SELECT @p_ServerName = info_value
+			--FROM [tb_info] 
+			--WHERE [Info_Key]= 'ServerName'
+			
+			SELECT @Profile_Name= info_value
+			FROM [tb_info] 
+			WHERE [Info_Key]= 'Current-DBA-Profile-Name'
+
+			
+
+			DECLARE @p_subject_1 AS VARCHAR(500)=@p_ServerName +' (Information Only) '+ '-- Trace files Purge older then ' + CONVERT(VARCHAR(100),@DaysToKeep)+ ' Day(s) Alert  ' +  '('+ 'DBA Mail -'+' ' + CONVERT(VARCHAR, GETDATE(), 9) + ')'
+			IF NOT EXISTS(SELECT 1 FROM #_Result)
+			BEGIN
+				DECLARE @p_subject_2 AS VARCHAR(500)=@p_ServerName +' (Information Only) '+ '-- There are no files for purge older then ' + CONVERT(VARCHAR(100),@DaysToKeep)+ ' Day(s) Alert  ' +  '('+ 'DBA Mail -'+' ' + CONVERT(VARCHAR, GETDATE(), 9) + ')'
+			END		
+			IF 	@p_subject_2 IS NOT NULL
+			SET @p_subject=@p_subject_2
+			ELSE 
+			SET @p_subject=@p_subject_1
+													
+				EXEC msdb.dbo.SP_SEND_DBMAIL
+				@Profile_name=@Profile_Name,
+				@subject =@p_subject,
+				@recipients = @p_recipients,
+				@body = @Html_1,
+				@body_format ='HTML',
+				@importance =  'HIGH'
+
+	END
+
+GO
+

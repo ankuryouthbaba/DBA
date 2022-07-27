@@ -1,0 +1,24 @@
+USE [admin]
+GO
+
+/****** Object:  Table [dbo].[tb_backup_info]    Script Date: 12/15/2021 10:37:19 PM ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+CREATE TABLE [dbo].[tb_backup_info](
+	[SNO] [int] NULL,
+	[dbName] [varchar](500) NULL,
+	[FullBkp] [bit] NULL,
+	[DiffBkp] [bit] NULL,
+	[LogBkp] [bit] NULL,
+	[VerifyBkp] [bit] NULL,
+	[Active] [bit] NULL,
+	[CompressBkp] [bit] NULL,
+	[bkpDir] [varchar](5000) NULL,
+	[MultiStripes] [bit] NULL
+) ON [PRIMARY]
+GO
+

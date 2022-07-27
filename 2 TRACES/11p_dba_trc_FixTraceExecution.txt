@@ -1,0 +1,99 @@
+USE [ADMIN]
+GO
+
+/****** Object:  StoredProcedure [dbo].[p_dba_trc_FixTraceExecution]    Script Date: 11/30/2021 5:00:17 AM ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+
+
+--use Admin
+
+--Take corrective Action to Fix Running Trace issues
+
+CREATE PROC [dbo].[p_dba_trc_FixTraceExecution]
+AS
+
+/* the following are the current things to be checked today.
+
+1.	Check if more than 1 trace is running -- send an email to the team so that they may check the reason and fix that. 
+Need to review for future implementations if this can be automated to close all and then run one. 
+
+2.	If there is a trace in stopped state -- Close the Trace and then Trigger it again. 
+
+3.	If there is no trace in a running state -- Trigger the trace again. 
+
+
+*/
+
+BEGIN 
+
+DECLARE @p_traceID INT
+DECLARE @traceCount SMALLINT
+
+
+IF EXISTS (SELECT * FROM sys.traces WHERE is_default = 0 AND PATH LIKE '%DbaTrace%' and status = 1)	
+	BEGIN	
+
+	RAISERROR ('Trace is runnig fine. Proc will exit', 0, 1) WITH NOWAIT
+	RETURN		
+
+	END
+
+
+
+/* We need to make sure our DBA trace name must include key word 'DbaTrace' */
+
+
+/*
+1.	Check if more than 1 trace is running -- send an email to the team so that they may check the reason and fix that. 
+Need to review for future implementations if this can be automated to close all and then run one. 
+*/
+SELECT @traceCount = COUNT(*) FROM sys.traces WHERE is_default = 0 AND PATH LIKE '%DbaTrace%'
+IF @traceCount > 1
+	BEGIN 
+
+		RAISERROR (N'There are more than 1 instances of DBA trace found on the server.
+					Please stop all except 1',   16, 1 ) 
+		RETURN
+
+	END
+
+
+
+/*
+2.	If there is a trace in stopped state -- Close the Trace and then Trigger it again. 
+*/
+IF EXISTS (SELECT * FROM sys.traces WHERE is_default = 0 AND PATH LIKE '%DbaTrace%' and status <>1)	
+	BEGIN	
+
+		SELECT @p_traceID  = id FROM sys.traces WHERE is_default = 0 and path like '%DbaTrace%'and status <>1	
+		EXEC sp_trace_setstatus @traceid = @p_traceID  , @status = 0
+		waitfor delay '00:00:02'
+		EXEC sp_trace_setstatus @traceid = @p_traceID  , @status = 2
+		waitfor delay '00:00:02'
+		exec master..p_dba_autotrace_Startup
+		
+	END
+		
+
+
+/*
+3.	If there is no trace in a running state -- Trigger the trace again. 
+*/
+IF NOT EXISTS (SELECT * FROM sys.traces WHERE is_default = 0 AND PATH LIKE '%DbaTrace%')	
+	BEGIN	
+
+		exec master..p_dba_autotrace_Startup
+		
+	END
+		
+
+END
+
+GO
+

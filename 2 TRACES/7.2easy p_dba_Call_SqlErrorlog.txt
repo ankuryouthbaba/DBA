@@ -1,0 +1,117 @@
+USE [ADMIN]
+GO
+
+/****** Object:  StoredProcedure [dbo].[p_dba_Call_SqlErrorlog]    Script Date: 11/30/2021 4:58:22 AM ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+CREATE PROCEDURE [dbo].[p_dba_Call_SqlErrorlog]
+ @ObjectID       INT
+ ,@sendMail BIT =1
+ ,@ToEmail varchar(1000) = 'DBA Process Email List - Raise Error Alert'
+AS
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED
+BEGIN
+ SET NOCOUNT ON;
+
+
+ DECLARE 
+  @ObjectName NVARCHAR(400),
+  @DatabaseID INT=NULL
+
+ SELECT
+  @DatabaseID = COALESCE(@DatabaseID, DB_ID())
+
+ INSERT dbo.t_dba_ErrorLog_Track
+ (
+	DatabaseID,
+	ObjectID,
+	DatabaseName,
+	ObjectName,
+	UserName,
+	ErrorNumber,
+	ErrorSeverity,
+	ErrorState,
+	ErrorLine,
+	ErrorMessage
+ )
+ SELECT
+	@DatabaseID,
+	@ObjectID,
+	DB_NAME(@DatabaseID),
+	--ERROR_PROCEDURE(),
+	OBJECT_NAME(@ObjectID),
+	CONVERT(sysname, CURRENT_USER), 
+	ERROR_NUMBER(),
+	ERROR_SEVERITY(),
+	ERROR_STATE(),
+	ERROR_LINE(),
+	ERROR_MESSAGE()
+END
+
+DECLARE @Html AS VARCHAR(MAX), @HtmlFirstTable AS VARCHAR(MAX), @HtmlSecondTable AS VARCHAR(MAX), @HtmlFillerTable VARCHAR(MAX),@SQLText2 AS VARCHAR(MAX)
+									DECLARE @SQLText1 AS VARCHAR(MAX)--2k5
+									SET @SQLText1 = 'SELECT TOP 1
+														DatabaseName,
+														ObjectName,
+														UserName,
+														ErrorNumber,
+														ErrorSeverity,
+														ErrorState,
+														ErrorLine,
+														ErrorMessage  
+														FROM t_dba_ErrorLog_Track ORDER BY Row_Id DESC'
+
+									--SET @SQLText2 = replace(convert(varchar(max),@Report), '<', '***')
+
+									EXECUTE ADMIN.dbo.p_DBA_ConvertTableToHtml @SQLText1,@HtmlFirstTable OUTPUT
+
+									--REPLACING LESS THAN AND GREATER THAN AFTER HIGHLIGHTING
+									SET @HtmlFirstTable = REPLACE(@HtmlFirstTable,'&lt;','<')
+									SET @HtmlFirstTable = REPLACE(@HtmlFirstTable,'&gt;','>')
+
+									 
+									DECLARE @BodyText VARCHAR(MAX)
+									SET @BodyText= '<HTML>
+									<BR>
+									<BR>
+									The Error details are below:
+									<BR>
+									<BR>
+									</HTML>' 
+									
+									 SET @HtmlFillerTable = '<HTML>
+									<BR>
+									<BR>
+									<BR>
+									<BR>
+									</HTML>' 
+									
+									----<P>' + @SQLText2 + ' </P>
+SET @Html =@BodyText+ @HtmlFirstTable	+ @HtmlFillerTable 
+
+	DECLARE @p_subject AS VARCHAR(500)=@@servername +' (Alert)'+ '-- RaiseError  ' + '('+ 'DBA Mail -'+' ' + CONVERT(VARCHAR, getdate(), 9) + ')'
+	DECLARE @p_recipients AS VARCHAR(5000)
+
+	SELECT @p_recipients= info_value
+	FROM [tb_info] 
+	WHERE [Info_Key]=@ToEmail
+
+	Select @ToEmail, @p_recipients
+
+	EXEC msdb.dbo.sp_send_dbmail
+	--@Profile_name='DBmail_Profile1',
+	@subject =@p_subject,
+	@recipients = @p_recipients,
+	@body = @Html,
+	@body_format ='HTML',
+	@importance =  'HIGH'
+
+
+
+
+GO
+

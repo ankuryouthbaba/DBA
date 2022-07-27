@@ -1,0 +1,153 @@
+USE [ADMIN]
+GO
+
+/****** Object:  StoredProcedure [dbo].[p_dba_Running_Trace_Stop_Notification]    Script Date: 11/30/2021 4:15:28 AM ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+CREATE PROCEDURE [dbo].[p_dba_Running_Trace_Stop_Notification]
+@SendMail BIT=0
+,@ToEmail VARCHAR(500)=''
+AS			
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED
+
+DECLARE @P_SERVERNAME VARCHAR(500)
+SELECT @P_SERVERNAME = INFO_VALUE FROM ADMIN..TB_INFO WHERE INFO_KEY = 'SERVERNAME'
+
+DECLARE @RowCount int = 0,@Trace_Id int,@threshold int
+SELECT @threshold = ISNULL(info_value,100000) FROM [Admin].[dbo].[tb_info] WHERE [Info_Key]='Current-DBA-Trace-Threshold-RowCount'
+
+DECLARE @traceSavePath nvarchar(2000), @Date varchar(50) 
+SELECT @traceSavePath=info_value FROM [Admin].[dbo].[tb_info] WHERE [Info_Key]='Current-DBA-Trace-Location'
+
+DECLARE @p_recipients varchar (500)
+SELECT @p_recipients= info_value
+FROM ADMIN..[tb_info] 
+WHERE [Info_Key]=@ToEmail
+SET @p_recipients = ISNULL(@p_recipients, @ToEmail)
+Select @ToEmail, @p_recipients
+
+
+IF NOT EXISTS (SELECT * FROM ADMIN.SYS.TABLES WHERE NAME ='t_Dba_Trace_Filters')
+CREATE TABLE Admin.DBO.t_Dba_Trace_Filters 
+(
+ Trace_Id INT
+,Trace_Filter_Duration INT
+,Ex_DBs_Frm_Trc_Table VARCHAR(4000)
+)
+--Event Capture Description
+DECLARE @Completepath NVARCHAR(2000)
+SELECT TOP 1 @Completepath=ISNULL(PATH,'')
+FROM SYS.TRACES WHERE IS_Default <> 1 
+AND STATUS=1 
+AND event_count >= @threshold
+AND PATH  like  @traceSavePath+'%'
+ORDER BY ID DESC
+
+IF @Completepath <>''
+BEGIN
+SELECT DISTINCT S.NAME INTO #TEMP FROM  ::FN_TRACE_GETTABLE(@Completepath, DEFAULT) FN
+JOIN SYS.TRACE_EVENTS  S ON s.trace_event_id=fn.EventClass ORDER BY name DESC
+
+DECLARE @temp VARCHAR(MAX)
+SELECT @temp = COALESCE(@temp+', ' ,'') + NAME FROM #TEMP
+END
+
+SELECT TOP 1 @Trace_Id=id
+FROM SYS.TRACES WHERE IS_Default <> 1 
+AND STATUS=1 
+AND event_count >= @threshold
+AND path  like  @traceSavePath+'%'
+ORDER BY ID DESC
+IF @@ROWCOUNT <> 0 
+	BEGIN
+		IF  EXISTS (SELECT * FROM tempdb.SYS.OBJECTS WHERE OBJECT_ID = OBJECT_ID(N'tempdb..[#TRACE_STATUS]') AND type in (N'U')) 
+		DROP TABLE #TRACE_STATUS
+		SELECT TOP 1 ID AS Trace_ID ,Start_time Trace_Start_time,last_event_time Trace_Last_Event_Time,event_count AS Row_Count 
+		,path AS Trace_File_Location,(tb.Trace_Filter_Duration)/1000/1000 AS Duration_Filter_Sec,tb.Ex_DBs_Frm_Trc_Table  Exclude_DBs_Frm_Trc,@temp AS Events_Capture
+		INTO #TRACE_STATUS
+		FROM SYS.TRACES st
+		LEFT JOIN ADMIN.dbo.t_Dba_Trace_Filters tb 
+		ON st.Id=tb.Trace_ID
+		WHERE IS_Default <> 1 AND STATUS=1 
+		AND path  like  @traceSavePath+'%'
+		ORDER BY ID DESC
+
+		EXEC sp_trace_setstatus @traceid = @Trace_Id , @status = 0
+		EXEC sp_trace_setstatus @traceid = @Trace_Id , @status = 2
+		
+		EXEC MASTER.dbo.p_dba_autotrace_Startup
+		
+		/*Give some breath to server for start new trace*/
+		Waitfor delay '00:00:05'
+			
+		
+		IF  EXISTS (SELECT * FROM tempdb.SYS.OBJECTS WHERE OBJECT_ID = OBJECT_ID(N'tempdb..[#TRACE_STATUS_NEW]') AND type in (N'U')) 
+		DROP TABLE #TRACE_STATUS_NEW
+		SELECT TOP 1 ID AS Trace_ID ,Start_time Trace_Start_time,last_event_time Trace_Last_Event_Time,event_count AS Row_Count 
+		,path AS Trace_File_Location,(tb.Trace_Filter_Duration)/1000/1000 AS Duration_Filter_Sec,tb.Ex_DBs_Frm_Trc_Table  Exclude_DBs_Frm_Trc,@temp AS Events_Capture
+		INTO #TRACE_STATUS_NEW
+		FROM SYS.TRACES st
+		LEFT JOIN ADMIN.dbo.t_Dba_Trace_Filters tb 
+		ON st.Id=tb.Trace_ID
+		WHERE IS_Default <> 1 AND STATUS=1 
+		AND path  like  @traceSavePath+'%'
+		ORDER BY ID DESC
+		
+		
+		DECLARE @SQLText AS VARCHAR(MAX)= 'SELECT * FROM #TRACE_STATUS'
+		DECLARE @HtmlFirstTable AS VARCHAR(MAX),@Html VARCHAR(MAX),@HtmlFillerTable VARCHAR(MAX)
+		
+		EXECUTE ADMIN..p_DBA_ConvertTableToHtml @SQLText,@HtmlFirstTable OUTPUT
+		
+		
+		DECLARE @SQLText_Second AS VARCHAR(MAX)= 'SELECT * FROM #TRACE_STATUS_NEW'
+		DECLARE @HtmlSecondTable AS VARCHAR(MAX),@HtmlFiller_SecondTable VARCHAR(MAX)
+		
+		EXECUTE ADMIN..p_DBA_ConvertTableToHtml @SQLText_Second,@HtmlSecondTable OUTPUT
+		
+							
+		SET @HtmlFillerTable = '<HTML>
+							<BR>
+							<BR>
+							<b> The following are the details of the trace which has been stopped as the number of rows retrieved is higher than the threshold. </b>
+							<BR>
+							<BR>
+							</HTML>'  
+							
+		SET @HtmlFiller_SecondTable = '<HTML>
+							<BR>
+							<BR>
+							<b> The following are the details of the trace which has been Started. </b>
+							<BR>
+							<BR>
+							</HTML>' 
+		
+		SET @Html = @HtmlFillerTable+@HtmlFirstTable+@HtmlFiller_SecondTable+@HtmlSecondTable
+
+	
+
+	IF EXISTS (SELECT TOP 1 * FROM #TRACE_STATUS) 
+		IF @SendMail=1
+					BEGIN
+						DECLARE @p_subject  VARCHAR(MAX)
+						SET @p_subject = @p_servername +' (Information Only) '+ '-- Running Trace Stopped and New Trace Started Notification ' + '('+ 'DBA Mail -'+' ' + CONVERT(VARCHAR, getdate(), 9) + ')' + ' (Informational, no action required)'
+							
+						
+					
+							EXEC msdb.dbo.sp_send_dbmail
+							@subject =@p_subject,
+							@recipients = @p_recipients,
+							@body = @Html,
+							@body_format ='HTML'
+							--@importance =  'HIGH'
+							
+
+					END
+	END
+GO
+

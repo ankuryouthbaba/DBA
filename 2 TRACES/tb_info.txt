@@ -1,0 +1,20 @@
+USE [ADMIN]
+GO
+
+/****** Object:  Table [dbo].[tb_info]    Script Date: 11/30/2021 3:56:19 AM ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+CREATE TABLE [dbo].[tb_info](
+	[Info_Key] [varchar](100) NOT NULL,
+	[info_value] [varchar](5000) NULL,
+ CONSTRAINT [PK_tb_info_temp_info_key] PRIMARY KEY CLUSTERED 
+(
+	[Info_Key] ASC
+)WITH (PAD_INDEX = OFF, STATISTICS_NORECOMPUTE = OFF, IGNORE_DUP_KEY = OFF, ALLOW_ROW_LOCKS = ON, ALLOW_PAGE_LOCKS = ON, FILLFACTOR = 90) ON [PRIMARY]
+) ON [PRIMARY]
+GO
+

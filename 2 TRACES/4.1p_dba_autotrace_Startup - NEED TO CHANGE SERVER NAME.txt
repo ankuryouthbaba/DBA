@@ -1,0 +1,363 @@
+-- [p_dba_autotrace_Startup]    
+
+USE [master]
+GO
+
+--	DOUBLE CHECK:	WHERE [Info_Key]='DBA Process Email List -Trace Status Information'
+
+/****** Object:  StoredProcedure [dbo].[p_dba_autotrace_Startup]    Script Date: 20-12-2021 15:30:31 ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+
+/*
+this trace will start if the duration is more than 2 seconds. and will check again and stop and delete if at all it starts with less than 2 sec filter
+--qysprdest
+EXEC p_dba_autotrace @traceSavePath= N'E:\DBA\PerfMon'
+,@maxfilesize = 50
+--,@Filter_DBname = N'demo'
+,@Filter_Duration = 1000000 
+GO
+--EXEC p_dba_autotrace @traceSavePath= N'E:\DBA\PerfMon'
+--,@maxfilesize = 50
+--,@Filter_Duration = 1000000 
+*/
+
+alter PROCEDURE [dbo].[p_dba_autotrace_Startup]
+
+AS
+/*******************************************************************
+File Name:p_dba_autotrace_Startup.sql
+Proc Name:p_dba_autotrace_Startup
+Author   :
+History: 
+
+Create a new stored procedures for autotrace_Startup report 
+
+Modifiy the proc to avoid the multiple traces running at a time in the server.
+
+Modifiy the proc for logon failure events
+
+**********************************************************************/
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED
+SET NOCOUNT ON
+BEGIN
+
+DECLARE @traceSavePath_Del nvarchar(2000)
+SELECT @traceSavePath_Del=info_value FROM [admin].[dbo].[tb_info] WHERE [Info_Key]='Current-DBA-Trace-Location'
+
+IF EXISTS(SELECT 1 FROM SYS.TRACES WHERE IS_Default <> 1 AND STATUS = 1 AND PATH  LIKE  @traceSavePath_Del+'%' )
+BEGIN	
+	IF (OBJECT_ID('TEMPDB..#TEMP_Trc') IS NOT NULL)
+    DROP TABLE #TEMP_Trc
+
+	SELECT 
+	IDENTITY(INT,1,1) RowID
+	,ID AS TraceID,
+	CASE WHEN STATUS=0 THEN 'Trace stopped but not Close'
+	  WHEN STATUS=1 THEN 'Trace Running' END Trace_Status	 
+	 ,PATH AS Trace_Location INTO #TEMP_Trc FROM SYS.TRACES WHERE IS_Default <> 1 ORDER BY STATUS DESC
+
+		DECLARE @SQLText AS VARCHAR(MAX)= 'SELECT * FROM #TEMP_Trc'
+		DECLARE @HtmlFirstTable AS VARCHAR(MAX),@Html VARCHAR(MAX),@HtmlFillerTable VARCHAR(MAX)
+		
+		EXECUTE admin..p_DBA_ConvertTableToHtml @SQLText,@HtmlFirstTable OUTPUT
+
+		SET @HtmlFillerTable = '<HTML>
+							<BR>
+							<b> The following are the details of the sql trace which is/are running or stopped in the Sql Server.
+							</b>
+							<BR>
+							</HTML>'  
+
+		
+		SET @Html = @HtmlFillerTable+@HtmlFirstTable
+		DECLARE @p_subject  VARCHAR(MAX),@p_recipients VARCHAR(MAX),@Profile_Name SYSNAME
+		SET @p_subject = @@SERVERNAME +' (Information Only) '+ '-- Trace Startup Procedure execution Notification while Trace Running at ' + '('+ 'DBA Mail -'+' ' + CONVERT(VARCHAR, GETDATE(), 9) + ')'
+								
+		SELECT @p_recipients= info_value
+		FROM admin..[tb_info] 
+		WHERE [Info_Key]='DBA Process Email List -Trace Status Information'
+		
+		SELECT @Profile_Name= info_value
+		FROM admin..[tb_info] 
+		WHERE [Info_Key]= 'Current-DBA-Profile-Name'
+						
+		EXEC msdb.dbo.SP_SEND_DBMAIL
+		@Profile_name=@Profile_Name,
+		@subject =@p_subject,
+		@recipients = @p_recipients,
+		@body = @Html,
+		@body_format ='HTML',
+		@importance =  'HIGH'
+		
+	RETURN
+END
+
+IF EXISTS(SELECT 1 FROM SYS.TRACES WHERE IS_Default <> 1 AND STATUS <> 1 AND PATH  LIKE  @traceSavePath_Del+'%' )
+BEGIN	
+	IF (OBJECT_ID('TEMPDB..#TEMP_Trc_Stop') IS NOT NULL)
+    DROP TABLE #TEMP_Trc_Stop
+
+	SELECT 
+	IDENTITY(INT,1,1) RowID
+	,ID AS TraceID,
+	CASE WHEN STATUS=0 THEN 'Trace stopped but not Close'
+	  WHEN STATUS=1 THEN 'Trace Running' END Trace_Status	 
+	 ,PATH AS Trace_Location INTO #TEMP_Trc_Stop FROM SYS.TRACES WHERE IS_Default <> 1 ORDER BY STATUS DESC
+
+		DECLARE @SQLText_2 AS VARCHAR(MAX)= 'SELECT * FROM #TEMP_Trc_Stop'
+		DECLARE @HtmlFirstTable_2 AS VARCHAR(MAX),@Html_2 VARCHAR(MAX),@HtmlFillerTable_2 VARCHAR(MAX)
+		,@p_recipients_2 VARCHAR(MAX),@Profile_Name_2 SYSNAME
+		
+		EXECUTE admin..p_DBA_ConvertTableToHtml @SQLText_2,@HtmlFirstTable_2 OUTPUT
+
+		SET @HtmlFillerTable_2 = '<HTML>
+							<BR>
+							<b> The following are the details of the sql trace which is/are stopped in the Sql Server while running new trace By Startup Procedure.
+							</b>
+							<BR>
+							</HTML>'  
+
+		
+		SET @Html_2 = @HtmlFillerTable_2+@HtmlFirstTable_2
+		DECLARE @p_subject_2  VARCHAR(MAX)
+		SET @p_subject_2 = @@SERVERNAME +' (Information Only) '+ '-- New Trace start Alert By Startup Procedure at ' + '('+ 'DBA Mail -'+' ' + CONVERT(VARCHAR, GETDATE(), 9) + ')'
+				
+		SELECT @p_recipients_2= info_value
+		FROM admin..[tb_info] 
+		WHERE [Info_Key]='DBA Process Email List -Trace Status Information'
+		
+		SELECT @Profile_Name_2= info_value
+		FROM admin..[tb_info] 
+		WHERE [Info_Key]= 'Current-DBA-Profile-Name'
+						
+		EXEC msdb.dbo.SP_SEND_DBMAIL
+		@Profile_name=@Profile_Name_2,
+		@subject =@p_subject_2,
+		@recipients = @p_recipients_2,
+		@body = @Html_2,
+		@body_format ='HTML',
+		@importance =  'HIGH'
+END
+
+WAITFOR DELAY '00:00:30'
+
+--IF NOT EXISTS(SELECT * FROM DB03.admin.SYS.TABLES WHERE NAME ='t_dba_trc_TraceLoad_Info')
+--CREATE TABLE [DB03].[admin].dbo.[t_dba_trc_TraceLoad_Info](
+--	[Rowid] [int] NULL,	[Row_Count] [int] NULL,[Trace_start_date] [datetime] NULL,
+--	[Last_Event_Time] [datetime] NULL,[TraceFile_Path] [nvarchar](4000) NULL,	[FileStatus] [int] NULL,
+--	[Completed_Flag] [bit] NULL DEFAULT (0),[Rec_Created_Dt] [datetime] NULL DEFAULT (GETDATE()),[Rec_Updated_Dt] [datetime] NULL DEFAULT (GETDATE())
+--) 
+
+
+/*Select the trace file path from tb_Info table and trace file name*/
+
+-- Please replace the text InsertFileNameHere, with an appropriate
+-- filename prefixed by a path, e.g., c:\MyFolder\MyTrace. The .trc extension
+-- will be appended to the filename automatically. If you are writing from
+-- remote server to local drive, please use UNC path and make sure server has
+-- write access to your network share
+
+
+DECLARE @traceSavePath NVARCHAR(2000), @Date VARCHAR(50) 
+SET  @Date = REPLACE(REPLACE(REPLACE(REPLACE(CONVERT(VARCHAR(50), GETDATE(), 120),'_',''),'-',''),':',''),' ','')
+SELECT @traceSavePath=info_value FROM [admin].[dbo].[tb_info] WHERE [Info_Key]='Current-DBA-Trace-Location'
+SET @traceSavePath=@traceSavePath+'DbaTrace'+@Date
+
+-- Set the Filters
+DECLARE @Filter_Duration BIGINT
+SELECT @Filter_Duration=info_value*1000  FROM [admin].[dbo].[tb_info] WHERE [Info_Key]='Current-DBA-Trace-Duration-Filter(ms)'
+
+
+-- Create a Queue
+DECLARE @rc INT
+DECLARE @TraceID INT
+DECLARE @maxfilesize BIGINT
+SELECT @maxfilesize=info_value*1024  FROM [admin].[dbo].[tb_info] WHERE [Info_Key]='Current-DBA-Trace-MAX-File-Size(GB)'
+
+
+
+DECLARE 
+--@DBNAME1 NVARCHAR(256)='MASTER',
+@DBNAME2 NVARCHAR(256)='MSDB',
+@DBNAME3 NVARCHAR(256)='MODEL',
+--@DBNAME4 NVARCHAR(256)='admin',
+@DBNAME5 NVARCHAR(256)='DISTRIBUTION'
+
+
+
+EXEC @rc = sp_trace_create @TraceID OUTPUT, 0, @traceSavePath, @maxfilesize, NULL 
+
+IF (@rc != 0) GOTO error
+
+-- Client side File and Table cannot be scripted
+
+-- Set the events
+DECLARE @on BIT
+SET @on = 1
+--TRACE LOGIN FAILURE SETUP START
+EXEC sp_trace_setevent @TraceId, 20, 1, @On
+EXEC sp_trace_setevent @TraceId, 20, 4, @On
+EXEC sp_trace_setevent @TraceId, 20, 8, @On
+EXEC sp_trace_setevent @TraceId, 20, 10, @On
+EXEC sp_trace_setevent @TraceId, 20, 11, @On
+EXEC sp_trace_setevent @TraceId, 20, 12, @On
+EXEC sp_trace_setevent @TraceId, 20, 14, @On
+EXEC sp_trace_setevent @TraceId, 20, 35, @On
+--TRACE LOGIN FAILURE SETUP END
+--LONG RUNNING QUERY SETUP START
+EXEC sp_trace_setevent @TraceID, 41, 1, @on
+EXEC sp_trace_setevent @TraceID, 41, 4, @on
+EXEC sp_trace_setevent @TraceID, 41, 8, @on
+EXEC sp_trace_setevent @TraceID, 41, 10, @on
+EXEC sp_trace_setevent @TraceID, 41, 11, @on
+EXEC sp_trace_setevent @TraceID, 41, 12, @on
+EXEC sp_trace_setevent @TraceID, 41, 13, @on
+EXEC sp_trace_setevent @TraceID, 41, 14, @on
+EXEC sp_trace_setevent @TraceID, 41, 15, @on
+EXEC sp_trace_setevent @TraceID, 41, 16, @on
+EXEC sp_trace_setevent @TraceID, 41, 17, @on
+EXEC sp_trace_setevent @TraceID, 41, 18, @on
+EXEC sp_trace_setevent @TraceID, 41, 35, @on
+EXEC sp_trace_setevent @TraceID, 41, 48, @on
+EXEC sp_trace_setevent @TraceID, 41, 51, @on
+
+EXEC sp_trace_setevent @TraceID, 43, 1, @on
+EXEC sp_trace_setevent @TraceID, 43, 4, @on
+EXEC sp_trace_setevent @TraceID, 43, 8, @on
+EXEC sp_trace_setevent @TraceID, 43, 10, @on
+EXEC sp_trace_setevent @TraceID, 43, 11, @on
+EXEC sp_trace_setevent @TraceID, 43, 12, @on
+EXEC sp_trace_setevent @TraceID, 43, 13, @on
+EXEC sp_trace_setevent @TraceID, 43, 14, @on
+EXEC sp_trace_setevent @TraceID, 43, 15, @on
+EXEC sp_trace_setevent @TraceID, 43, 34, @on
+EXEC sp_trace_setevent @TraceID, 43, 35, @on
+EXEC sp_trace_setevent @TraceID, 43, 48, @on
+EXEC sp_trace_setevent @TraceID, 43, 51, @on
+
+EXEC sp_trace_setevent @TraceID, 45, 1, @on
+EXEC sp_trace_setevent @TraceID, 45, 4, @on
+EXEC sp_trace_setevent @TraceID, 45, 8, @on
+EXEC sp_trace_setevent @TraceID, 45, 10, @on
+EXEC sp_trace_setevent @TraceID, 45, 11, @on
+EXEC sp_trace_setevent @TraceID, 45, 12, @on
+EXEC sp_trace_setevent @TraceID, 45, 13, @on
+EXEC sp_trace_setevent @TraceID, 45, 14, @on
+EXEC sp_trace_setevent @TraceID, 45, 15, @on
+EXEC sp_trace_setevent @TraceID, 45, 16, @on
+EXEC sp_trace_setevent @TraceID, 45, 17, @on
+EXEC sp_trace_setevent @TraceID, 45, 18, @on
+EXEC sp_trace_setevent @TraceID, 45, 34, @on
+EXEC sp_trace_setevent @TraceID, 45, 35, @on
+EXEC sp_trace_setevent @TraceID, 45, 48, @on
+EXEC sp_trace_setevent @TraceID, 45, 51, @on
+--LONG RUNNING QUERY SETUP END
+--BLOCKING SETUP START
+EXEC sp_trace_setevent @TraceID, 137, 1, @on
+EXEC sp_trace_setevent @TraceID, 137, 3, @on
+EXEC sp_trace_setevent @TraceID, 137, 4, @on
+EXEC sp_trace_setevent @TraceID, 137, 12, @on
+EXEC sp_trace_setevent @TraceID, 137, 13, @on
+EXEC sp_trace_setevent @TraceID, 137, 14, @on
+EXEC sp_trace_setevent @TraceID, 137, 15, @on
+EXEC sp_trace_setevent @TraceID, 137, 35, @on
+EXEC sp_trace_setevent @TraceID, 137, 51, @on
+--BLOCKING SETUP END
+--DEADLOCK GRAPH SETUP START
+exec sp_trace_setevent @TraceID, 148, 1, @on
+exec sp_trace_setevent @TraceID, 148, 12, @on
+exec sp_trace_setevent @TraceID, 148, 11, @on
+exec sp_trace_setevent @TraceID, 148, 14, @on
+exec sp_trace_setevent @TraceID, 148, 26, @on
+--DEADLOCK GRAPH SETUP END
+
+
+--ADDED duration filter (4 means >= (Greater Than Or Equal))
+EXEC sp_trace_setfilter @TraceID, 13, 0, 4, @Filter_Duration
+
+----DATABASE FILTER NOT LIKE OPERATER
+----EXCLUDE BELOW DATABASE DATA IN THE TRACE TABLE.
+--EXEC sp_trace_setfilter @TraceID, 35, 0, 7, @DBNAME1
+EXEC sp_trace_setfilter @TraceID, 35, 0, 7, @DBNAME2
+EXEC sp_trace_setfilter @TraceID, 35, 0, 7, @DBNAME3
+--EXEC sp_trace_setfilter @TraceID, 35, 0, 7, @DBNAME4
+EXEC sp_trace_setfilter @TraceID, 35, 0, 7, @DBNAME5
+----Exclude the SQL Server Profiler rows
+EXEC sp_trace_setfilter @TraceID, 10, 0, 7, N'SQL Server Profiler%'
+
+
+IF NOT EXISTS (SELECT * FROM admin.SYS.TABLES WHERE NAME ='t_Dba_Trace_Filters')
+CREATE TABLE admin.dbo.t_Dba_Trace_Filters 
+(
+ Trace_Id INT
+,Trace_Filter_Duration INT
+,Ex_DBs_Frm_Trc_Table VARCHAR(4000)
+)
+
+TRUNCATE TABLE admin.dbo.t_Dba_Trace_Filters
+
+DECLARE @Ex_DBs_Frm_Trc_Table VARCHAR(4000)
+SET @Ex_DBs_Frm_Trc_Table= 
+--@DBNAME1+','+
+@DBNAME2+','+@DBNAME3+','
+--+@DBNAME4+','
++@DBNAME5
+
+INSERT INTO admin.dbo.t_Dba_Trace_Filters(Trace_Id,Trace_Filter_Duration,Ex_DBs_Frm_Trc_Table)
+VALUES(@TraceID,@Filter_Duration,@Ex_DBs_Frm_Trc_Table)
+
+-- Set the trace status to start
+
+---- here should be a check
+
+IF EXISTS ( SELECT * FROM fn_trace_getfilterinfo(@TraceID) WHERE columnid=13 AND value >= @Filter_Duration)
+
+	BEGIN 
+
+		EXEC sp_trace_setstatus @TraceID, 1
+
+		WAITFOR DELAY '00:00:05' 
+		DECLARE @traceSavePathWithExtn NVARCHAR(2800)
+		SET @traceSavePathWithExtn=@traceSavePath+'.trc'
+	
+		INSERT INTO [LAPTOP-3ORK763R].[admin].dbo.[t_dba_trc_TraceLoad_Info] (TraceFile_Path,FileStatus,Rec_Created_Dt,Rec_Updated_Dt)VALUES (@traceSavePathWithExtn,1,GETDATE(),GETDATE())
+		UPDATE [LAPTOP-3ORK763R].[admin].dbo.[t_dba_trc_TraceLoad_Info] SET FileStatus=2,Rec_Updated_Dt=GETDATE() WHERE TraceFile_Path NOT LIKE @traceSavePathWithExtn AND FileStatus NOT IN (2)
+		
+		 
+	END
+
+-- display trace id for future references
+SELECT TraceID=@TraceID
+
+IF NOT EXISTS ( SELECT * FROM fn_trace_getfilterinfo(@TraceID) WHERE columnid=13 AND value >= @Filter_Duration)
+
+	BEGIN 
+
+			PRINT'Duration filter is less than expected value set in tbinfo table so stopping the trace.'
+
+			EXEC sp_trace_setstatus  @TraceID,0 
+
+			EXEC sp_trace_setstatus  @TraceID,2
+	END
+
+GOTO finish
+
+ERROR: 
+SELECT ErrorCode=@rc
+
+FINISH: 
+
+END
+GO
+
+EXEC sp_procoption N'[dbo].[p_dba_autotrace_Startup]', 'startup', '1'
+GO
+
+
+-- [p_dba_autotrace_Startup]    

@@ -1,0 +1,22 @@
+USE [ADMIN]
+GO
+
+/****** Object:  StoredProcedure [dbo].[p_dba_Insert_Trace_WaitForDelay]    Script Date: 11/30/2021 5:01:50 AM ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+CREATE PROCEDURE [dbo].[p_dba_Insert_Trace_WaitForDelay]
+@DelayTime varchar(8) = '00:00:06'
+AS
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED
+BEGIN
+SET NOCOUNT ON;
+Exec ('Use tempdb')
+WAITFOR DELAY @DelayTime
+END
+GO
+

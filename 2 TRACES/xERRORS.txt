@@ -1,0 +1,17 @@
+--31p_dba_autotrace_Startup
+
+Msg 19062, Level 16, State 1, Procedure sp_trace_create, Line 1 [Batch Start Line 3]
+Could not create a trace file.
+
+
+-- 5 trc_load_master_tracedata (After running the proc, it shows following error)
+
+Msg 19050, Level 16, State 1, Procedure p_dba_trc_Load_Master_TraceData, Line 43 [Batch Start Line 3]
+Trace file name '' is invalid.
+
+--9 dba_Delete_Files_By_Data
+
+Msg 201, Level 16, State 4, Procedure p_dba_Delete_Files_By_Date, Line 0 [Batch Start Line 3]
+Procedure or function 'p_dba_Delete_Files_By_Date' expects parameter '@FileExtension', which was not supplied.
+
+

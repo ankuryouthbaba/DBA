@@ -1,0 +1,29 @@
+USE [ADMIN]
+GO
+
+/****** Object:  StoredProcedure [dbo].[p_dba_sendMail]    Script Date: 11/30/2021 5:03:47 AM ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+CREATE proc [dbo].[p_dba_sendMail]
+@subject varchar(1000)
+AS
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED
+BEGIN
+DECLARE @P_SERVERNAME VARCHAR(500)
+SELECT @P_SERVERNAME = INFO_VALUE FROM TB_INFO WHERE INFO_KEY = 'SERVERNAME'
+	DECLARE @p_recipients VARCHAR(2000)
+	SELECT @p_recipients = info_value FROM admin..tb_info WHERE Info_Key = 'SE-DBA-Admin '
+	
+	DECLARE @p_subject AS VARCHAR(500)=@P_SERVERNAME +' (Information Only) '+ ' --' + ' '+ @subject + ' started  ' + '('+ 'DBA Mail -'+' ' + CONVERT(VARCHAR, getdate(), 9) + ')'
+ 
+	EXEC msdb..sp_send_dbmail
+		 @recipients = @p_recipients 
+		,@subject = @p_subject
+		
+END
+GO
+

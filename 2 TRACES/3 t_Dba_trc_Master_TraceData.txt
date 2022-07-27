@@ -1,0 +1,39 @@
+USE [ADMIN]
+GO
+
+/****** Object:  Table [dbo].[t_Dba_trc_Master_TraceData]    Script Date: 11/30/2021 4:02:36 AM ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+CREATE TABLE [dbo].[t_Dba_trc_Master_TraceData](
+	[Row_Number] [int] IDENTITY(1,1) NOT NULL,
+	[ServerName] [varchar](256) NULL,
+	[DatabaseName] [varchar](256) NULL,
+	[LoginName] [varchar](512) NULL,
+	[HostName] [varchar](512) NULL,
+	[EventClass] [int] NULL,
+	[SPID] [int] NULL,
+	[Duration] [bigint] NULL,
+	[StartTime] [datetime] NULL,
+	[EndTime] [datetime] NULL,
+	[ObjectName] [varchar](256) NULL,
+	[ApplicationName] [varchar](256) NULL,
+	[Reads] [bigint] NULL,
+	[Writes] [bigint] NULL,
+	[CPU] [int] NULL,
+	[RowCounts] [bigint] NULL,
+	[TextData] [varchar](max) NULL,
+	[Rec_Created_Dt] [datetime] NULL,
+	[Rec_Updated_Dt] [datetime] NULL
+) ON [PRIMARY] TEXTIMAGE_ON [PRIMARY]
+GO
+
+ALTER TABLE [dbo].[t_Dba_trc_Master_TraceData] ADD  CONSTRAINT [DT__t_Dba_trc_Master_TraceData__Rec_Created_Dt]  DEFAULT (getdate()) FOR [Rec_Created_Dt]
+GO
+
+ALTER TABLE [dbo].[t_Dba_trc_Master_TraceData] ADD  CONSTRAINT [DT__t_Dba_trc_Master_TraceData__Rec_Updated_Dt]  DEFAULT (getdate()) FOR [Rec_Updated_Dt]
+GO
+

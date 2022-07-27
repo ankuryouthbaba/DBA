@@ -1,0 +1,162 @@
+USE [ADMIN]
+GO
+
+/****** Object:  StoredProcedure [dbo].[p_dba_trc_Load_Master_TraceData]    Script Date: 11/30/2021 4:05:11 AM ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+CREATE Procedure [dbo].[p_dba_trc_Load_Master_TraceData]
+@SendMail BIT=0
+,@ToEmail VARCHAR(500)=''
+AS
+/*******************************************************************
+File Name:p_dba_trc_Load_Master_TraceData.sql
+Proc Name:p_dba_trc_Load_Master_TraceData
+Author   :
+History: 
+
+Create a new stored procedures for Laod Master trace data report 
+
+**********************************************************************/
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED
+
+SET NOCOUNT ON
+--EXEC admin.dbo.p_dba_trc_Load_Master_TraceData @SendMail=1
+
+DECLARE @P_SERVERNAME VARCHAR(500)
+SELECT @P_SERVERNAME = INFO_VALUE FROM TB_INFO WHERE INFO_KEY = 'SERVERNAME'
+
+	DECLARE 
+	 @TraceFile_Path NVARCHAR(MAX)
+	,@StartTime DATETIME
+	,@Last_Event_Date  DATETIME
+	,@Count INT
+	,@LastEventload_Dt_Master DATETIME
+	,@Last_StartLogon_Eventload_Time DATETIME
+	,@rowid INT
+	,@FileStatus INT
+	,@Profile_Name sysname
+
+	SELECT @LastEventload_Dt_Master=ISNULL(MAX(Last_Event_Time),'1753-01-01') FROM Admin.dbo.t_dba_trc_TraceLoad_Info
+	SELECT TOP 1 @Last_StartLogon_Eventload_Time =StartTime FROM Admin.dbo.t_Dba_trc_Master_TraceData
+	WHERE EventClass=20 ORDER BY [Row_Number] DESC
+	
+	SELECT top 1 @TraceFile_Path=ISNULL(TraceFile_Path,''),@rowid=rowid FROM Admin.dbo.t_dba_trc_TraceLoad_Info
+	WHERE Completed_Flag=0 ORDER BY rowid ASC
+
+	select @TraceFile_Path
+
+	SELECT @Count=COUNT(1) FROM ::fn_trace_gettable(@TraceFile_Path, DEFAULT)
+	WHERE SPID IS NOT NULL
+
+	SELECT TOP 1 @StartTime=StartTime FROM ::fn_trace_gettable(@TraceFile_Path, DEFAULT)
+	WHERE StartTime IS NOT NULL
+
+	SELECT TOP 1 @Last_Event_Date=ISNULL(EndTime,GETDATE()) FROM ::fn_trace_gettable(@TraceFile_Path, DEFAULT)
+	WHERE EndTime IS NOT NULL ORDER BY EndTime DESC
+
+	IF @Last_Event_Date IS NULL 
+		BEGIN 
+			SELECT @Last_Event_Date = ISNULL(@Last_Event_Date , GETDATE())
+		END
+		
+	IF (@Last_StartLogon_Eventload_Time IS NULL OR @Last_StartLogon_Eventload_Time='')
+		BEGIN 
+			SELECT @Last_StartLogon_Eventload_Time = '1753-01-01 00:00:00.000'
+		END
+	
+		SELECT TOP 1 @FileStatus=FileStatus FROM Admin.dbo.t_dba_trc_TraceLoad_Info WHERE rowid=@rowid
+
+		INSERT INTO Admin.dbo.t_Dba_trc_Master_TraceData
+		(ServerName,DatabaseName,EventClass,SPID,Duration,StartTime,EndTime,ObjectName,ApplicationName,Reads,Writes,CPU,RowCounts,TextData,LoginName,HostName)
+		SELECT ServerName,DatabaseName,EventClass,SPID,Duration,StartTime,EndTime,ObjectName,ApplicationName,Reads,Writes,CPU,RowCounts,TextData,LoginName,HostName
+		FROM ::FN_TRACE_GETTABLE(@TraceFile_Path, default)
+		WHERE SPID IS NOT NULL
+		AND (EndTime > @LastEventload_Dt_Master)
+		--Exclude the master db query apart from logon failure events
+		AND ISNULL(DatabaseName,'') <> 'MASTER'		
+		UNION ALL
+		SELECT ServerName,DatabaseName,EventClass,SPID,Duration,StartTime,EndTime,ObjectName,ApplicationName,Reads,Writes,CPU,RowCounts,TextData,LoginName,HostName
+		FROM ::FN_TRACE_GETTABLE(@TraceFile_Path, default)
+		WHERE SPID IS NOT NULL
+		AND (StartTime > @Last_StartLogon_Eventload_Time)
+		--Exclude the master db query apart from logon failure events
+		AND EventClass=20
+
+print @@ERROR
+		IF @@ERROR=0
+		
+		UPDATE Admin.dbo.t_dba_trc_TraceLoad_Info 
+		SET 
+		 Row_Count=@Count
+		,Trace_Start_Date=@StartTime
+		,Last_Event_Time=@Last_Event_Date
+		,Completed_Flag=CASE WHEN @FileStatus=1 THEN  0  
+							 WHEN @FileStatus=2 THEN  1 END
+		,Rec_Updated_Dt = GETDATE()		  
+		WHERE Rowid=@rowid
+		
+/*Email when trace file loded completed*/
+
+			SELECT TraceFile_Path,Row_Count,Trace_Start_Date,Last_Event_Time,Completed_Flag
+			INTO #trc_TraceLoad_Info_1 FROM Admin.dbo.t_dba_trc_TraceLoad_Info
+			WHERE Completed_Flag = 1 AND rowid = @rowid
+			
+			DECLARE @SQLText_1 AS VARCHAR(MAX)= 'SELECT * FROM #trc_TraceLoad_Info_1'
+			DECLARE @HtmlFirstTable_1 AS VARCHAR(MAX),@Html_1 VARCHAR(MAX),@HtmlFillerTable_1 VARCHAR(MAX)
+			
+			EXECUTE ADMIN..p_DBA_ConvertTableToHtml @SQLText_1,@HtmlFirstTable_1 OUTPUT
+			
+								
+			SET @HtmlFillerTable_1 = '<HTML>
+								<BR>
+								<BR>
+								<b> The following are the details of the trace which has been loaded into master Trace table.</b>
+								<BR>
+								<BR>
+								</HTML>'  
+			
+			SET @Html_1 = @HtmlFillerTable_1+@HtmlFirstTable_1
+			DECLARE @p_recipients varchar (500)
+			
+			SELECT @p_recipients= info_value
+			FROM ADMIN..[tb_info] 
+			WHERE [Info_Key]=@ToEmail
+			
+			Select @ToEmail, @p_recipients
+										
+
+			IF EXISTS(SELECT * FROM #trc_TraceLoad_Info_1)
+			BEGIN
+					IF @SendMail=1
+								BEGIN
+									DECLARE @p_subject  VARCHAR(MAX)
+									SET @p_subject = @P_SERVERNAME + ' - Trace Loaded Notification at ' + '('+ 'DBA Mail -'+' ' + CONVERT(VARCHAR, GETDATE(), 9) + ')'										
+
+										
+										SELECT @Profile_Name= info_value
+										FROM ADMIN..[tb_info] 
+										WHERE [Info_Key]= 'Current-DBA-Profile-Name'
+
+								
+										EXEC msdb.dbo.SP_SEND_DBMAIL
+										@Profile_name=@Profile_Name,
+										@subject =@p_subject,
+										@recipients = @p_recipients,
+										@body = @Html_1,
+										@body_format ='HTML',
+										@importance =  'HIGH'
+
+								END			
+			END
+
+
+
+
+
+
+GO
+
