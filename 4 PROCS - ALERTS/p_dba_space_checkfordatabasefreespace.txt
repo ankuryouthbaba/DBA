@@ -1,0 +1,233 @@
+USE [ADMIN]
+GO
+
+/****** Object:  StoredProcedure [dbo].[p_dba_space_checkfordatabasefreespace]    Script Date: 12/1/2021 9:56:02 AM ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+
+
+
+CREATE PROCEDURE [dbo].[p_dba_space_checkfordatabasefreespace]    
+@SendMail BIT=1
+,@ToEmail VARCHAR(100)=''    
+,@Threshold_Space_Used_Percent INT =90   
+AS    
+SET NOCOUNT ON;    
+/*************************************************************************
+Author:		SE AdminDB Experts.
+
+Purpose:	Collect the information about free space available in each database on the server
+
+Description:  
+1.	This proc Collect the information about free space available in each database on the server
+2.	The proc further  sends an email alert  to inform recipients about avaialility of space to databases when used space is more than the threshold.
+
+
+Parameters Explained:
+@SendMail						----		When it is marked 1 then email needs to be sent. When it is marked 0 then email needs not to be sent.
+@ToEmail						----		It contains the list of email address to whome the email needs to be sent.
+@Threshold_Space_Used_Percent	----		It contains the threshold value of percentage of used space in the databases.
+
+Sample Execution parameters:	
+EXEC Admin..p_dba_space_checkfordatabasefreespace 
+@SendMail							=		1
+,@ToEmail							=		'DBA-TEST-EMAIL-LIST'
+,@Threshold_Space_Used_Percent		=		90
+		
+History:
+1.	
+2.	
+
+
+**************************************************************************/
+DECLARE @loop               INT;    
+DECLARE @count              INT;    
+DECLARE @db_name            VARCHAR(100);    
+DECLARE @exec_string        VARCHAR(5000);    
+DECLARE @id                 INT;    
+DECLARE @free_space         INT    
+    
+    
+--create a table for holding all database free space    
+IF OBJECT_ID('TEMPDB.DBO.#space_used') IS NOT NULL    
+DROP TABLE #space_used    
+CREATE TABLE #space_used    
+(    
+id INT IDENTITY(1,1)    
+,[file_id] INT
+,File_Name VARCHAR(50)
+,DBNAME VARCHAR(100)    
+,FileType VARCHAR(25)    
+,File_Size_MB VARCHAR(25)    
+,Space_Used_MB VARCHAR(25)    
+,Free_Space_MB VARCHAR(25)    
+,Free_Space_Percent VARCHAR(25)
+,Space_Used_percent VARCHAR(200)    
+,Threshold_Space_Used_Percent VARCHAR(200)   
+)    
+    
+    
+--get the names of all user databases    
+IF OBJECT_ID('TEMPDB.DBO.#temp') IS NOT NULL    
+DROP TABLE #temp    
+--SELECT    
+-- IDENTITY(INT,1,1) AS ID,NAME    
+--INTO #temp    
+--FROM SYS.DATABASES    
+--WHERE state_desc = 'ONLINE';    
+
+SELECT IDENTITY(INT,1,1) AS ID,NAME    
+INTO #temp     FROM master.sys.databases WHERE state_desc = 'ONLINE' AND is_in_standby =0 AND
+	name NOT IN (SELECT d.name
+		FROM sys.databases d  JOIN sys.availability_replicas ar on d.replica_id = ar.replica_id  JOIN sys.servers s ON s.name = ar.replica_server_name AND s.server_id = 0 /*local server*/ 
+		WHERE ar.secondary_role_allow_connections   =0
+		AND 
+		DATABASEPROPERTYEX(d.name, 'updateability') = 'Read_only')
+		    
+SET @loop = 1;    
+SELECT @count = MAX(ID) FROM #temp;    
+    
+--loop through each database and get the data file free space            
+WHILE @loop <= @count    
+ BEGIN    
+ --get our working db    
+ SELECT    
+  @db_name = NAME    
+ FROM    
+  #temp    
+ WHERE    
+  ID = @loop;    
+    
+ SET @exec_string = '    
+  USE ' + @db_name + ';    
+    
+ ;WITH CTE AS    
+ (    
+  SELECT  file_id,name,''' + @db_name + ''' as database_name     
+  ,CASE type WHEN 0 THEN ''DataFile'' WHEN 1 THEN ''LogFile'' END AS FileType,    
+  SUM(SIZE)/128.0 AS  File_Size_MB,     
+  SUM(CAST(FILEPROPERTY(name, ''SPACEUSED'') AS INT))/128.0 as  Space_Used_MB,     
+  SUM( size)/128.0 - SUM(CAST(FILEPROPERTY(name,''SPACEUSED'') AS INT))/128.0 AS  Free_Space_MB      
+  FROM SYS.DATABASE_FILES      
+  WHERE type_desc <> ''FILESTREAM''
+  GROUP BY TYPE, file_id,name   
+  ) SELECT *,     
+  CONVERT(DECIMAL,ROUND((Free_Space_MB/File_Size_MB) *100,2) ) as Free_Space_Percent     
+  ,CONVERT(DECIMAL,ROUND((Space_Used_MB/File_Size_MB) *100,2)) as Space_Used_Percent     
+  ,'+ CONVERT(VARCHAR(50),@Threshold_Space_Used_Percent) + ' AS Threshold_Space_Used_Percent
+  FROM CTE'    
+	
+ --pull our space data back and insert into our holding table    
+ --print  @exec_string ;    
+ INSERT #space_used    
+ EXECUTE (@exec_string);    
+    
+ --next please                    
+ SET @loop = @loop + 1    
+    
+END    
+
+SELECT file_id,File_Name,DBname,FileType,File_Size_MB,Space_used_MB,Free_space_MB,Free_Space_Percent,Threshold_Space_Used_Percent,Space_Used_Percent FROM #space_used
+INSERT INTO t_dba_space_checkfordatabasefreespace_Collection (file_id,File_Name,DBname,FileType,File_Size_MB,Space_used_MB,Free_space_MB,Free_Space_Percent,Threshold_Space_Used_Percent,Space_Used_Percent,Rec_Created_Dt)
+SELECT file_id,File_Name,DBname,FileType,File_Size_MB,Space_used_MB,Free_space_MB,Free_Space_Percent,Threshold_Space_Used_Percent,Space_Used_Percent,GETDATE() FROM #space_used
+
+
+DELETE FROM #space_used WHERE Space_Used_Percent < @Threshold_Space_Used_Percent    
+
+IF OBJECT_ID('tempdb..#space_used_html') IS NOT NULL DROP TABLE #space_used_html
+
+SELECT su.* INTO #space_used_html FROM #space_used su
+LEFT JOIN t_dba_space_checkfordatabasefreespace_exclusion Ex
+ON su.DBNAME = Ex.[Database Name] AND su.[File_Name] = Ex.[File Name]
+WHERE  Ex.Included_Excluded IS NULL OR Ex.Included_Excluded <> 1
+
+UPDATE #space_used_html
+SET 
+Space_Used_percent = '<B><Font color=red>' + Space_Used_percent + '</B></Font>'
+,Threshold_Space_Used_Percent = '<B><Font color=black>' + Threshold_Space_Used_Percent + '</B></Font>'
+
+IF (@@ROWCOUNT > 0)      
+BEGIN    
+ IF @SendMail=1    
+  BEGIN    
+   DECLARE @SQLText AS VARCHAR(MAX)= 'SELECT file_id,File_Name,DBname,FileType,File_Size_MB,Space_used_MB,Free_space_MB,Free_Space_Percent,Threshold_Space_Used_Percent,Space_Used_Percent FROM #space_used_html'    
+     DECLARE @HtmlTable AS VARCHAR(MAX)    
+     ,@Html VARCHAR(MAX)    
+     ,@HtmlFillerTable_title VARCHAR(MAX)    
+     ,@Profile_Name SYSNAME    
+     ,@p_recipients VARCHAR(MAX)    
+     ,@DBnames VARCHAR(MAX)    
+     ,@p_subject VARCHAR(500)    
+       
+     EXECUTE ADMIN..p_DBA_ConvertTableToHtml @SQLText,@HtmlTable OUTPUT    
+           SET @HtmlTable = REPLACE(@HtmlTable,'&lt;','<')    
+   SET @HtmlTable = REPLACE(@HtmlTable,'&gt;','>')  
+     SET @HtmlFillerTable_title = '<HTML>    
+          <BR>    
+          <b> The following are the details of the Available Space where db files with lower than threshold.</b>    
+          <BR>    
+          </HTML>'
+		  
+	--	  DECLARE @SqlQuery2 AS NVARCHAR(4000)    
+ -- DECLARE @Html2 AS NVARCHAR(MAX)    
+ -- DECLARE @p_body2 AS NVARCHAR(MAX)  
+ -- DECLARE @HtmlFillerTable AS NVARCHAR(MAX) 
+ -- IF OBJECT_ID('tempdb..#TempTableForConvertToHTML2') IS NOT NULL DROP TABLE #TempTableForConvertToHTML2  
+ -- CREATE TABLE #TempTableForConvertToHTML2     
+ --(    
+ -- [Responsible Team] NVARCHAR(1000),     
+ -- [Alert Source] NVARCHAR(1000),    
+ -- [Host Name] NVARCHAR(1000)    
+ --)   
+   
+ --INSERT INTO #TempTableForConvertToHTML2 ([Responsible Team],[Alert Source],[Host Name])    
+ --SELECT 'DBA Team','SQL Job',@@servername  
+ --SET @p_body2 = '<html><p><strong>Note: The Server Time(EST) is operating on:  '  + CONVERT(VARCHAR(30), GETDATE(), 121)+'</strong></p></body></html>'   
+ --SET @SqlQuery2 = 'SELECT [Responsible Team],[Alert Source],[Host Name] FROM #TempTableForConvertToHTML2'    
+ --EXEC [dbo].[p_DBA_ConvertTableToHtml] @SqlQuery2, @Html2 OUTPUT    
+       
+ --  SET @Html2 = REPLACE(@Html2,'&lt;','<')    
+ --  SET @Html2 = REPLACE(@Html2,'&gt;','>')  
+       
+ --  SET @HtmlFillerTable = '<HTML><BR><BR></HTML>'  
+  		 
+		              
+     SET @Html =  @HtmlFillerTable_title+@HtmlTable    
+    
+     SELECT @DBnames = COALESCE(@DBnames + ',', '') +  CONVERT(VARCHAR(100),dbname)    
+     FROM #space_used     
+         
+     --SELECT @p_subject = @@SERVERNAME + ' (Alert) -- ' + 'Database(s) '     
+     --+ @DBnames + ' have file(s) with lower than ' + CONVERT (VARCHAR,(100-@Threshold_Space_Used_Percent) ) + '% Space Available (DBA Mail - '  + CAST(GETDATE() AS VARCHAR) + ')'    
+    DECLARE @P_ENVIRONMENT VARCHAR(500)
+SELECT @P_ENVIRONMENT = INFO_VALUE FROM TB_INFO WHERE INFO_KEY = 'ENVIRONMENT'
+
+	SELECT @p_subject = @@SERVERNAME+' (Alert) -- ' +' Following Databases have file(s) with lower than Threshold_Space_Used_Percent % Space Available' + '('+ 'DBA Mail -'+' ' + CONVERT(VARCHAR, getdate(), 9) + ')'
+	                   
+               
+     SELECT @p_recipients= info_value    
+     FROM ADMIN..[tb_info]     
+     WHERE [Info_Key]=@ToEmail    
+    
+	 SET @p_recipients = ISNULL(@p_recipients, @Toemail)
+     SELECT @Profile_Name= info_value    
+     FROM ADMIN..[tb_info]     
+     WHERE [Info_Key]= 'Current-DBA-Profile-Name'    
+            
+     EXEC msdb.dbo.SP_SEND_DBMAIL    
+     @Profile_name=@Profile_Name,    
+     @subject =@p_subject,    
+     @recipients = @p_recipients,    
+     @body = @Html,    
+     @body_format ='HTML',    
+     @importance =  'HIGH'    
+    
+  END    
+END 
+GO
+

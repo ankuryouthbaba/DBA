@@ -1,0 +1,167 @@
+USE [ADMIN]
+GO
+
+/****** Object:  StoredProcedure [dbo].[p_dba_SMTP_Alert]    Script Date: 12/1/2021 10:10:38 AM ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+CREATE PROC [dbo].[p_dba_SMTP_Alert]
+@SendMail BIT = 0,@ToEmail VARCHAR(500)=''
+AS
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED
+--EXEC Admin.dbo.p_dba_SMTP_Alert @SendMail=1
+DECLARE @P_SERVERNAME VARCHAR(500)
+SELECT @P_SERVERNAME = INFO_VALUE FROM tb_info WHERE INFO_KEY = 'SERVERNAME'
+
+DECLARE @p_subject AS VARCHAR(max)='', @p_subject1  VARCHAR(1000) = '',  @p_subject2 AS VARCHAR(500)=''
+DECLARE @body NVARCHAR(MAX)='',@body_1 NVARCHAR(MAX)='',@body_2 NVARCHAR(MAX)=''
+DECLARE @xml_1 NVARCHAR(MAX)='',@xml_2 NVARCHAR(MAX)=''
+DECLARE @last_mod_date DATETIME=DATEADD(MI,-5,GETDATE()),@Startdate DATETIME=DATEADD(mi,-6,GETDATE()),@Endtdate DATETIME=DATEADD(mi,-1,GETDATE()) 
+
+
+IF EXISTS
+(
+	SELECT TOP 1 * FROM msdb.[dbo].[sysmail_log]  sl 
+	WHERE 
+		(
+		(ISNULL(IS_SRVROLEMEMBER(N'sysadmin'), 0) = 1) 
+		OR (EXISTS (SELECT mailitem_id FROM msdb.[dbo].[sysmail_allitems] ai WHERE sl.mailitem_id = ai.mailitem_id))
+		)
+	AND event_type  NOT IN (0,1,2) AND sl.last_mod_date >= @last_mod_date
+) 
+BEGIN
+	PRINT 'a'
+	SET @xml_1 =@xml_1+CAST((
+	SELECT
+	ROW_NUMBER() OVER (ORDER BY (sl.last_mod_date) DESC) AS 'td','',
+	'error' AS 'td','',
+	CONVERT(VARCHAR,sl.last_mod_date, 9) AS 'td','', 
+	description AS 'td',''
+	FROM msdb.[dbo].[sysmail_log]  sl WHERE 
+		(
+		(ISNULL(IS_SRVROLEMEMBER(N'sysadmin'), 0) = 1) 
+		OR (EXISTS ( SELECT TOP 1 mailitem_id FROM msdb.[dbo].[sysmail_allitems] ai WHERE sl.mailitem_id = ai.mailitem_id))
+		)
+		AND event_type  NOT IN (0,1,2) AND sl.last_mod_date >= @last_mod_date
+	FOR XML PATH ('tr'), ELEMENTS ) AS NVARCHAR(MAX))
+
+	SET @body_1 ='<html><H1><span style="font-size: 12px;">
+	<u>
+	There may be a network problem preventing Database Mail from contacting the SMTP servers. 
+	</u>
+	</span></p></H1><body bgcolor=White>
+	<BR>
+	<table border = 2><tr><th>SrNo</th><th>Event_Type</th><th>Last_Modify_Date</th><th>Description</th></th></tr>' 
+
+	SET @body = @body_1 + @xml_1+'</table></body></html>'	
+	
+END
+-- to see the unsent database mails. will check if the mail is atleast a minute old.
+
+IF EXISTS
+(
+	SELECT TOP 1 * FROM msdb.dbo.sysmail_allitems WHERE (sent_status = 'unsent' OR sent_status = 'retrying') 
+	AND last_mod_date BETWEEN @Startdate AND @Endtdate
+)
+BEGIN 
+	PRINT 'b'
+		SET @xml_2 =CAST((
+		SELECT
+		ROW_NUMBER() OVER (ORDER BY (last_mod_date) DESC) AS 'td','',
+		subject AS 'td','',
+		recipients AS 'td','',
+		sent_status AS 'td','',
+		importance AS 'td','',
+		body AS 'td','',
+		CONVERT(VARCHAR,send_request_date, 9) AS 'td','',
+		CONVERT(VARCHAR,last_mod_date, 9) AS 'td',''
+		FROM msdb.dbo.sysmail_allitems WHERE (sent_status = 'unsent' OR sent_status = 'retrying') AND last_mod_date BETWEEN @Startdate AND @Endtdate
+		FOR XML PATH ('tr'), ELEMENTS ) AS NVARCHAR(MAX))
+
+	SET @body_2 ='<html><H1><span style="font-size: 12px;">
+	<u>
+	There may be entries which are in dbmail queue from long time in sysmail_unsentitems table. 
+	</u>
+	</span></p></H1><body bgcolor=White>
+	<BR>
+	<table border = 2><tr><th>SrNo</th><th>Subject</th><th>Recipients</th><th>Sent_Status</th><th>Importance</th><th>Body</th><th>Send_Request_Date</th><th>Last_Modify_Date</th></th></tr>' 
+	SET @body = @body + @body_2 + @xml_2+'</table></body></html>'
+END
+
+IF @xml_1<>''
+SET @p_subject2=@P_SERVERNAME +' (Information Only)'+ ' -- There are error entries in the dbmail Log. Please check ' + '('+ 'DBA Mail -'+' ' + CONVERT(VARCHAR, getdate(), 9) + ')'
+IF @xml_2 <>''
+SET @p_subject2=@P_SERVERNAME +' (Information Only)'+ ' -- There may be entries which are in dbmail queue from long time. Please check ' + '('+ 'DBA Mail -'+' ' + CONVERT(VARCHAR, getdate(), 9) + ')'
+IF (@xml_1<>'' AND @xml_2<>'')
+SET @p_subject2=@P_SERVERNAME +' (Information Only)'+ ' -- There are error and dbmail Queue entries in the Database Mail Log and unsentitems table. Please check ' + '('+ 'DBA Mail -'+' ' + CONVERT(VARCHAR, getdate(), 9) + ')'
+
+IF @p_subject2<>''
+BEGIN
+	
+	DECLARE @priProfile varchar(20),@secProfile varchar(20),@curProfileBefore varchar(20),@curProfileAfter varchar(20)
+
+	SELECT @curProfileBefore = info_value FROM Admin.dbo.tb_info
+	WHERE Info_Key = 'Current-DBA-Profile-Name'
+
+	SELECT @secProfile = info_value FROM Admin.dbo.tb_info
+	WHERE Info_Key = 'Secondary-SMTP-Profile-Name'
+
+	SELECT @priProfile = info_value FROM Admin.dbo.tb_info
+	WHERE Info_Key = 'Primary-SMTP-Profile-Name'
+
+	IF @curProfileBefore = @priProfile
+	UPDATE Admin.dbo.tb_info
+	SET info_value = @secProfile where Info_Key = 'Current-DBA-Profile-Name'	
+	
+	--IF @curProfile = @secProfile
+	--UPDATE Admin.dbo.tb_info
+	--	SET info_value = @priProfile where Info_Key = 'Current-DBA-Profile-Name'
+
+	IF @@ROWCOUNT > 0
+	BEGIN
+		SELECT @curProfileAfter = info_value FROM Admin.dbo.tb_info
+		WHERE Info_Key = 'Current-DBA-Profile-Name'
+
+		/*Sending Email*/
+		DECLARE @p_recipients AS VARCHAR(5000),@Profile_Name sysname
+
+		
+							SELECT @p_recipients= info_value
+					FROM [tb_info] 
+					WHERE [Info_Key]= @ToEmail
+												
+						SELECT @p_recipients = ISNULL(@p_recipients, @Toemail)
+
+		SELECT @Profile_Name= info_value
+		FROM ADMIN..[tb_info] 
+		WHERE [Info_Key]= 'Current-DBA-Profile-Name'
+			
+			
+		SET @p_subject1 = '!!!!! CRITICAL!!!!! Primary SMTP was found to be not responsive. The Email Profile has been changed from ' +@curProfileBefore+ ' to ' + @curProfileAfter + '('+ 'DBA Mail -'+' ' + CONVERT(VARCHAR, getdate(), 9) + ')'
+		
+		--SET @p_subject = @p_subject2 + @p_subject1
+		SET @p_subject = @p_subject2 + ' ' + @p_subject1
+		PRINT @p_subject 
+		
+		IF @SendMail = 1
+		BEGIN
+			EXEC msdb.dbo.sp_send_dbmail
+			@Profile_name=@Profile_Name,
+			@subject =@p_subject,
+			@recipients = @p_recipients,
+			@body = @body,
+			@body_format ='HTML',
+			@importance =  'HIGH'
+
+		END
+	END
+END
+
+
+
+GO
+

@@ -1,0 +1,32 @@
+USE [ADMIN]
+GO
+
+/****** Object:  StoredProcedure [dbo].[p_dba_prod_isalive_insert_fv_tp_db2]    Script Date: 11/17/2021 04:02:56 ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+CREATE PROC [dbo].[p_dba_prod_isalive_insert_fv_tp_db2]
+AS
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED
+/********************************************************************
+
+File Name:p_dba_prod_isalive_insert
+Proc Name:p_dba_prod_isalive_insert
+History  : 2016-12-27
+Create a new stored procedures for prod_isalive to insert data in table.
+
+**********************************************************************/
+SET NOCOUNT ON 
+
+INSERT INTO dbo.t_dba_prod_isalive_check_FV_TP_DB2(ObjectName)
+SELECT TOP 1 name FROM [WIN-4Q4SUGCBRC1\MSSQLSERVER2].ADMIN.SYS.TABLES
+
+
+
+
+
+GO
+

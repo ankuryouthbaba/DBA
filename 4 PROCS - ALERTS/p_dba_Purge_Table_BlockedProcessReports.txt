@@ -1,0 +1,41 @@
+USE [ADMIN]
+GO
+
+/****** Object:  StoredProcedure [dbo].[p_dba_Purge_Table_BlockedProcessReports]    Script Date: 12/1/2021 10:09:38 AM ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+Create PROCEDURE [dbo].[p_dba_Purge_Table_BlockedProcessReports]
+@duration SMALLINT = 90, @batchSize INT = 5000
+AS
+/***************************************************************************
+Table purge by this proc:
+
+t_dba_BlockedProcessReports
+
+***************************************************************************/
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED
+DECLARE @I INT = 1, @RowCount INT = 0
+
+WHILE (@I = 1)
+BEGIN
+
+IF EXISTS(SELECT * FROM SYS.TABLES WHERE NAME='t_dba_BlockedProcessXML')
+DELETE TOP (@batchSize) FROM t_dba_BlockedProcessReports 
+WHERE EventDate <  ( GETDATE() - @duration)
+SELECT @RowCount = @@ROWCOUNT + @RowCount
+
+	
+	IF @RowCount  = 0 
+		BREAK
+
+	SET @RowCount =0
+
+	WAITFOR DELAY '00:00:02'
+	
+END
+GO
+

@@ -1,0 +1,202 @@
+USE [ADMIN]
+GO
+
+/****** Object:  StoredProcedure [dbo].[P_dba_sendmail_afterJobFailed]    Script Date: 11/30/2021 5:31:36 AM ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+
+CREATE PROC [dbo].[P_dba_sendmail_afterJobFailed]
+@job_id UNIQUEIDENTIFIER
+,@strtdt VARCHAR(100)
+,@strttm VARCHAR(100) 
+,@sendMail BIT=1
+,@ToEmail VARCHAR(500)=''
+AS
+/*************************************************************************
+** Name:p_dba_SendMailAfterJobRun
+** Desc:p_dba_SendMailAfterJobRun report proc
+**************************************************************************
+**History
+**************************************************************************
+1. Create new proc to monitor the Alwayson Latency of the server.
+
+
+
+
+
+**************************************************************************/
+SET NOCOUNT ON
+
+
+--Try Catch Block Start here
+BEGIN TRY
+	IF OBJECT_ID('tempdb..#SendMail_AfterJob_Failed', 'U') IS NOT NULL
+	DROP TABLE #SendMail_AfterJob_Failed
+
+CREATE TABLE [#SendMail_AfterJob_Failed](
+	[STEP_ID] [varchar](200) NULL,
+	[STEP_NAME] [varchar](200) NULL,
+	[RUN_STATUS_DESCRIPTION] [varchar](200) NULL,
+	[MESSAGE] [varchar](2000) NULL,
+	[STEP_RUN_DATETIME] [varchar](200) NULL,
+	[RUN_DURATION] [varchar](200) NULL,
+	[RUN_STATUS] [varchar](200) NULL
+)
+
+--Variable declaretion
+DECLARE
+@job_name SYSNAME
+,@email_address NVARCHAR(300)
+,@run_status INT --0 = Failed, 1 = Succeeded, 2 = Retry, 3 = Canceled
+,@subject NVARCHAR(255)
+,@step_name SYSNAME --to hold name of jobstep
+,@step_id INT
+
+,@step_run_duration INT
+,@JobExecutionDateTime DATETIME
+,@p_RowCount INT=0
+
+--Business logic start here 
+
+IF EXISTS
+		(
+			SELECT  h.step_id, 
+					h.step_name,
+					case h.run_status when 1 then 'Succeeded' when 0 then 'Failed' when 2 then 'Retry' when 3 then 'Canceled' 
+					 else 'Other than Succeeded, Failed, Retry or Canceled' end AS run_status_description,
+					h.[message], 
+					msdb.dbo.agent_datetime(h.run_date, h.run_time) as STEP_RUN_DATETIME,
+					h.run_duration, 
+					h.run_status 
+			FROM msdb.dbo.sysjobhistory AS h 
+			WHERE h.job_id = @job_id
+			AND msdb.dbo.agent_datetime(h.run_date, h.run_time) 
+			>= msdb.dbo.agent_datetime(CAST(@strtdt AS int), CAST(@strttm AS int))
+			AND step_id <> 0
+			AND h.run_status = 0
+		)
+BEGIN
+	------------------------
+	--Get job name
+	------------------------
+
+	SET @job_name = (SELECT s.name FROM msdb.dbo.sysjobs AS s WHERE s.job_id = @job_id)
+	IF @job_name IS NULL
+	BEGIN
+	   RAISERROR('Failed to retreive job name, teminating procedure p_dba_SendMailAfterJobRunV1.', 16, 1)
+	   RETURN
+	END
+
+		INSERT INTO #SendMail_AfterJob_Failed
+		(
+		STEP_ID,
+		STEP_NAME,
+		RUN_STATUS_DESCRIPTION,
+		MESSAGE,
+		STEP_RUN_DATETIME,
+		RUN_DURATION,
+		RUN_STATUS
+		)
+		SELECT  cast(h.STEP_ID as varchar(500)) STEP_ID, 
+					cast(h.STEP_NAME as varchar(200)) STEP_NAME,
+					cast(case h.run_status when 1 then 'Succeeded' when 0 then 'Failed' when 2 then 'Retry' when 3 then 'Canceled' 
+					 else 'Other than Succeeded, Failed, Retry or Canceled' end as varchar(500)) AS RUN_STATUS_DESCRIPTION,
+					cast(h.[MESSAGE] as varchar(2000)) [MESSAGE], 
+					cast(msdb.dbo.agent_datetime(h.run_date, h.run_time) as varchar(500)) as STEP_RUN_DATETIME,
+					cast(h.RUN_DURATION as varchar(500)) RUN_DURATION, 
+					cast(h.RUN_STATUS as varchar(500)) RUN_STATUS
+			FROM msdb.dbo.sysjobhistory AS h 
+			WHERE h.job_id = @job_id
+			AND msdb.dbo.agent_datetime(h.run_date, h.run_time) 
+			>= msdb.dbo.agent_datetime(CAST(@strtdt AS int), CAST(@strttm AS int))
+			AND step_id <> 0
+			ORDER BY step_id
+
+
+	SET @p_RowCount=@@Rowcount
+
+--Business logic Ends here 
+
+--Send email logic start here 
+
+	IF (@sendMail =0) 
+	SELECT * FROM #SendMail_AfterJob_Failed
+
+	IF (@sendMail =0 and @ToEmail <>'')
+		BEGIN
+			RAISERROR('If we need to send email , we must keep the value of the parameter @sendemail as 1...', 16, 1)WITH NOWAIT;
+			RETURN
+		END
+		
+	IF (@sendMail =1 AND @p_RowCount>0)
+
+	BEGIN
+
+	IF (@sendMail =1 AND @ToEmail ='')
+		BEGIN
+			RAISERROR('If the value of the parameter @sendemail is 1, we need to specify email address in the @ToEmail parameter 
+						else keep the @sendemail=0 and ToEmail=NULL or blank..', 16, 1)WITH NOWAIT;
+		RETURN
+		END
+
+		DECLARE @P_SERVERNAME VARCHAR(500),@Profile_Name VARCHAR(100)
+		DECLARE @p_subject	  VARCHAR(500),@p_recipients VARCHAR(1000)
+		SELECT @Profile_Name= info_value FROM [tb_info] WHERE [Info_Key]= 'Current-DBA-Profile-Name'
+		--SELECT @P_SERVERNAME = INFO_VALUE FROM TB_INFO WHERE INFO_KEY = 'SERVERNAME'
+		DECLARE @Subject_SendMail_AfterJob_Failed VARCHAR(500)=' SendMail AfterJob Failed '	--Variable 
+		DECLARE @Html_Title_SendMail_AfterJob_Failed VARCHAR(500)='Table Showing Job Failed information '	--Variable 
+
+		DECLARE @Html VARCHAR(5000),@Html_Title VARCHAR(5000)
+		DECLARE @Html_SendMail_AfterJob_Failed VARCHAR(5000)
+		DECLARE @SQL_Text_SendMail_AfterJob_Failed VARCHAR(5000)
+
+
+		--UPDATE #SendMail_AfterJob_Failed SET
+		--				STEP_ID = '<B><Font color=red>' + STEP_ID + '</B></Font>'
+		--				,STEP_NAME = '<B><Font color=red>' + STEP_NAME + '</B></Font>'
+		--				,RUN_STATUS_DESCRIPTION = '<B><Font color=red>' + RUN_STATUS_DESCRIPTION + '</B></Font>'
+		--				,[MESSAGE] = '<B><Font color=red>' + [MESSAGE] + '</B></Font>'
+		--				,STEP_RUN_DATETIME = '<B><Font color=red>' + STEP_RUN_DATETIME + '</B></Font>'
+		--				,RUN_DURATION = '<B><Font color=red>' + RUN_DURATION + '</B></Font>'
+		--				,RUN_STATUS = '<B><Font color=red>' + RUN_STATUS + '</B></Font>'
+		--		  WHERE RUN_STATUS_DESCRIPTION = 'Failed'
+
+		SELECT @p_recipients= info_value
+		FROM [tb_info] 
+		WHERE [Info_Key]=@ToEmail		
+		SELECT @p_recipients = ISNULL(@p_recipients,@ToEmail) 
+
+
+
+		SELECT @SQL_Text_SendMail_AfterJob_Failed =  'SELECT * FROM #SendMail_AfterJob_Failed'
+		SET  @p_subject=  ISNULL(@P_SERVERNAME,@@SERVERNAME) +' (Alert) '+ '-- Job Failure for the '+@job_name+'.'+ '('+ 'DBA Mail -'+' ' + CONVERT(VARCHAR, getdate(), 9) + ')'
+		SELECT @Html_Title = '<html><p><u><strong><span style="background-color:#eeeeee;"> '+ @Html_Title_SendMail_AfterJob_Failed +'</span></strong></u></p> <br> </body></html>'
+
+		EXECUTE  dbo.p_DBA_ConvertTableToHtml @SQL_Text_SendMail_AfterJob_Failed,@Html_SendMail_AfterJob_Failed OUTPUT   
+
+		SELECT @Html  = @Html_Title + @Html_SendMail_AfterJob_Failed 
+
+		EXEC msdb.dbo.SP_SEND_DBMAIL
+				@Profile_name=@Profile_Name
+				,@recipients	= @p_recipients 
+				,@subject		= @p_subject
+				,@body		= @Html
+				,@body_format = 'html'	
+
+--Send email logic Ends here 
+	END
+END
+
+END TRY
+BEGIN CATCH	
+	EXEC p_dba_Call_SqlErrorlog @ObjectID = @@PROCID;
+
+END CATCH----Try Catch Block End Here
+
+GO
+

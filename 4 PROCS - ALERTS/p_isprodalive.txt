@@ -1,0 +1,77 @@
+USE [ADMIN]
+GO
+
+/****** Object:  StoredProcedure [dbo].[p_dba_prod_isalive_check_fv_TP_db2]    Script Date: 11/17/2021 03:57:50 ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+CREATE PROC [dbo].[p_dba_prod_isalive_check_fv_TP_db2] 
+@ToEmail VARCHAR(500)='',
+@LatencyThreshold SMALLINT = 10
+AS
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED
+/********************************************************************
+
+File Name:p_dba_prod_isalive_check
+Proc Name:p_dba_prod_isalive_check
+History  : 2017-01-04
+Create a new stored procedures for prod_isalive check.
+
+**********************************************************************/
+
+SET NOCOUNT ON 
+DECLARE @p_recipients AS VARCHAR(5000),@Profile_Name SYSNAME,@p_subject VARCHAR(500),@html VARCHAR(1000),@currentLatency SMALLINT,@FLAG BIT=1,@err_msg AS NVARCHAR(MAX);
+			
+	BEGIN TRY
+	EXEC p_dba_prod_isalive_insert_FV_TP_DB2
+	END TRY
+	
+	BEGIN CATCH	
+	    SELECT 
+	    ERROR_MESSAGE() AS ErrorMessage;
+	    SET @err_msg = 'Production ISalive Check Failed. Error Message - ' +  ERROR_MESSAGE();
+		SET @FLAG=1	
+	END CATCH
+		
+SELECT TOP 1 @currentLatency = DATEDIFF(mi,Rec_created_date,GETDATE()) FROM t_dba_prod_isalive_check_FV_TP_DB2 ORDER BY Rec_created_date DESC
+
+SELECT @currentLatency 
+
+UPDATE t_dba_prod_isalive_check_FV_TP_DB2
+SET latency_Mins = @currentLatency
+WHERE Rec_created_date in (SELECT TOP 1 Rec_created_date FROM ADMIN.DBO.t_dba_prod_isalive_check_FV_TP_DB2 ORDER BY Rec_created_date DESC )
+
+SET @p_subject= 'FV-TP-DB2'+' (Alert)'+ '--' + 'Server may not be available from ' + CAST (@currentLatency AS VARCHAR(10))+ ' minutes (DBA Mail - ' +  CAST(GETDATE() AS VARCHAR) + ')'
+SET @html='Production ISalive Check Failed, please check the production server health. It may not be available.' 
+
+IF ((@currentLatency  > @LatencyThreshold) AND @FLAG=1)
+	BEGIN 
+						
+		SELECT @p_recipients= info_value
+		FROM ADMIN..[tb_info] 
+		WHERE [Info_Key]=@ToEmail
+
+		SET @p_recipients=ISNULL(@p_recipients,@ToEmail)
+
+		SELECT @p_recipients Recipients_list
+
+				SELECT @Profile_Name= info_value
+				FROM ADMIN..[tb_info] 
+				WHERE [Info_Key]= 'Current-DBA-Profile-Name'
+					
+						
+				EXEC MSDB..SP_SEND_DBMAIL
+				 @Profile_name = @Profile_Name,
+				 @recipients	= @p_recipients 
+				,@subject		= @p_subject
+				,@body			= @err_msg
+				,@body_format	='html'
+				,@importance	= 'High'
+					
+	END
+					
+GO
+

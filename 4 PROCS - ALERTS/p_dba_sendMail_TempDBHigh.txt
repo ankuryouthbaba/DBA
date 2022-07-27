@@ -1,0 +1,169 @@
+USE [ADMIN]
+GO
+
+/****** Object:  StoredProcedure [dbo].[p_dba_sendMail_TempDBHigh]    Script Date: 12/1/2021 10:03:45 AM ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+CREATE proc [dbo].[p_dba_sendMail_TempDBHigh]
+@SendMail BIT=0,@ToEmail varchar(100)=''
+AS
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED
+--EXEC Admin..p_dba_sendMail_TempDBHigh  @SendMail=1
+DECLARE @P_SERVERNAME VARCHAR(500)
+SELECT @P_SERVERNAME = INFO_VALUE FROM TB_INFO WHERE INFO_KEY = 'SERVERNAME'
+DECLARE @xml NVARCHAR(MAX)DECLARE @body NVARCHAR(MAX)
+SET @xml =CAST((
+  SELECT TOP 5 --Change number accordingly
+  ROW_NUMBER() over (order by (su.Task_Alloc+su.Task_Dealloc) DESC) AS 'td','',
+  su.Session_ID AS 'td','',
+  ss.Login_Name AS 'td','', 
+  rq.Command AS 'td','',
+  su.Task_Alloc AS 'td','',
+  su.Task_Dealloc AS 'td','',
+ --Find Offending Query Text:
+  (SELECT SUBSTRING(text, rq.statement_start_offset/2 + 1,
+   (CASE WHEN statement_end_offset = -1 
+         THEN LEN(CONVERT(nvarchar(max),text)) * 2 
+         ELSE statement_end_offset 
+   END - rq.statement_start_offset)/2)
+  FROM sys.dm_exec_sql_text(sql_handle)) AS 'td'
+  FROM      
+  (SELECT su.session_id, su.request_id,
+   SUM(su.internal_objects_alloc_page_count + su.user_objects_alloc_page_count) AS Task_Alloc,
+   SUM(su.internal_objects_dealloc_page_count + su.user_objects_dealloc_page_count) AS Task_Dealloc
+  FROM sys.dm_db_task_space_usage AS su
+  GROUP BY session_id, request_id) AS su, 
+   sys.dm_exec_sessions AS ss, 
+   sys.dm_exec_requests AS rq
+  WHERE su.session_id = rq.session_id 
+   AND(su.request_id = rq.request_id) 
+   AND (ss.session_id = su.session_id)
+   AND su.session_id > 50  --sessions 50 and below are system sessions and should not be killed
+   AND su.session_id <> (SELECT @@SPID) --Eliminates current user session from results
+  ORDER BY su.task_alloc DESC  --The largest "Task Allocation/Deallocation" is probably the query that is causing the db growth
+FOR XML PATH ('tr'), ELEMENTS ) AS NVARCHAR(MAX))
+--BODY OF EMAIL - Edit for your environment
+
+DECLARE @xml_LongRunning_Sql NVARCHAR(MAX)DECLARE @body_LongRunning_Sql NVARCHAR(MAX)
+DECLARE @Limit_Sec INT =120
+SET @xml_LongRunning_Sql
+				=CAST((
+					SELECT TOP 5 
+					ROW_NUMBER() over (order by datediff(SS,s_er.start_time,GETDATE()) DESC) AS 'td','',
+					s_er.session_id AS 'td',''
+					,s_es.[login_name] AS 'td',''
+					,s_er.start_time AS 'td',''
+					,datediff(SS,s_er.start_time,GETDATE()) AS 'td',''
+					,db_name(s_er.database_id)  AS 'td',''
+					, host_name AS 'td',''
+					, command AS 'td',''
+					,LEFT(s_est.[text],3000) AS 'td',''
+					--INTO #TempTable
+					FROM sys.dm_exec_requests s_er 
+						LEFT JOIN sys.dm_exec_sessions s_es      ON s_es.[session_id] = s_er.[session_id]
+						LEFT JOIN sys.dm_exec_connections s_ec      ON s_ec.[session_id] = s_er.[session_id]      
+						OUTER APPLY sys.dm_exec_sql_text (s_ec.[most_recent_sql_handle]) AS s_est
+						where DATEDIFF(SS,s_er.start_time,GETDATE()) > @Limit_Sec
+						AND s_er.session_id <> @@spid
+						AND s_er.session_id > 50 
+						AND (s_er.wait_type <> 'TRACEWRITE' or s_er.Last_wait_type <> 'TRACEWRITE' ) 
+						AND command NOT IN ('BRKR TASK','DB MIRROR', 'UPDATE STATISTIC')
+						AND (command NOT LIKE 'DBCC%' 
+						AND command NOT LIKE 'ALTER Index%' 
+						AND command NOT LIKE 'RESTORE%' 
+						AND command NOT LIKE 'BACKUP%')
+						AND db_name(s_er.database_id) not in ('Admin','msdb','distribution')
+						AND (s_est.[text] NOT LIKE  '%sp_replcmds%' 
+						AND s_est.[text] NOT LIKE  '%xp_cmdshell%')
+						ORDER BY datediff(SS,s_er.start_time,GETDATE()) DESC
+FOR XML PATH ('tr'), ELEMENTS ) AS NVARCHAR(MAX))
+
+CREATE TABLE #dbsize ( DataFileName VARCHAR(50),DataSpaceUsedInMB Numeric(30, 2),type tinyint)
+
+INSERT INTO #dbsize (DataFileName,DataSpaceUsedInMB,type)
+EXEC sp_msforeachdb 'use [?]; 
+SELECT name AS ''DataFileName'',ROUND(CAST(FILEPROPERTY(name, ''SpaceUsed'') AS int) / 128, 1) AS ''DataSpaceUsedInMB'' 
+,type FROM  [sys].[database_files] WHERE name LIKE ''temp%'''
+
+SELECT  df.name  AS FileName , size/128 AS TotalSizeInMB
+,DataSpaceUsedInMB/(size/128)*100  [%spaceused]
+INTO #TempdbFilestatus
+FROM TEMPDB.sys.database_files df 
+LEFT OUTER JOIN TEMPDB.sys.data_spaces ds 
+ON df.data_space_id = ds.data_space_id
+LEFT JOIN #dbsize db ON df.name=db.DataFileName
+
+--SELECT * from #TempdbFilestatus
+--DROp TABLE  #dbsize
+--DROp TABLE  #TempdbFilestatus
+
+DECLARE @xml_Logused_info NVARCHAR(MAX)DECLARE @body_Logused_info NVARCHAR(MAX)
+SET @xml_Logused_info =CAST((
+SELECT  FileName  AS 'td',''
+, TotalSizeInMB AS 'td',''
+, [%spaceused] AS 'td',''
+FROM #TempdbFilestatus
+FOR XML PATH ('tr'), ELEMENTS ) AS NVARCHAR(MAX))
+
+
+SET @body ='<html><H1><span style="font-size: 12px;">Tempdb Large Running Query</span></p></H1>
+<body bgcolor=white>
+<BR><u><b> NOTE:</u></b>The query below with the highest task allocation and high task deallocation are primarily responsible for growing the tempdb. 
+<BR>
+Please see if we need to stop these processes or let them continue.
+<BR>
+<BR>
+<BR>
+<table border = 2><tr><th>SrNo</th><th>Session_ID</th><th>Login_Name</th><th>Command</th><th>Task_Alloc</th><th>Task_Dealloc</th><th>Query_Text</th></tr>' 
+SET @body = @body + @xml+'</table></body></html>'
+
+SET @body_Logused_info ='
+<body bgcolor=white>
+<BR><u><b>
+<BR>
+<BR>
+Tempdb files usage </u></b>
+<BR>
+<BR>
+<table border = 2><tr><th>FileName</th><th>TotalSizeInMB</th><th>%spaceused</th>' 
+SET @body =@body +@body_Logused_info + @xml_Logused_info +'</table></body></html>'
+
+SET @body_LongRunning_Sql ='
+<body bgcolor=white>
+<BR><u><b>
+<BR>
+<BR>
+Currently Running Queries </u>(This shows the workload that is currently in process on the SQL Server.)</u></b>
+<BR>
+<BR>
+<table border = 2><tr><th>SrNo</th><th>Session_ID</th><th>Login_Name</th><th>start_time</th><th>Duration</th><th>DBname</th><th>Host_Name</th><th>Command</th><th>SQLText</th></tr>' 
+
+IF @xml_LongRunning_Sql<>''
+SET @body = @body+ @body_LongRunning_Sql+@xml_LongRunning_Sql +'</table></body></html>'
+ELSE 
+SET @body = @body+ @body_LongRunning_Sql +'</table></body></html>'
+
+IF @SendMail=1
+			BEGIN
+				DECLARE @p_subject AS VARCHAR(500)=@p_servername +' (Alert) '+ '-- Alert for uses Of tempdb log file above threshold  ' + '('+ 'DBA Mail -'+' ' + CONVERT(VARCHAR, getdate(), 9) + ')'
+				DECLARE @p_recipients AS VARCHAR(5000)
+				SET @p_recipients = ISNULL(@p_recipients, @ToEmail)
+				SELECT @p_recipients= info_value
+				FROM ADMIN..[tb_info] 
+				WHERE [Info_Key]= @ToEmail
+
+
+					EXEC msdb.dbo.sp_send_dbmail
+					@subject =@p_subject,
+					@recipients = @p_recipients,
+					@body = @body,
+					@body_format ='HTML',
+					@importance =  'HIGH'
+
+			END
+GO
+

@@ -1,0 +1,117 @@
+USE [ADMIN]
+GO
+
+/****** Object:  StoredProcedure [dbo].[p_dba_MaintTimeoverAlert]    Script Date: 12/1/2021 10:12:03 AM ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+CREATE PROC [dbo].[p_dba_MaintTimeoverAlert]
+@SendMail BIT = 0,@ToEmail VARCHAR(500)=''
+
+--	[p_dba_MaintTimeoverAlert] @SendMail=1, @ToEmail='DBA_TEST'
+AS
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED
+    
+DECLARE @P_SERVERNAME VARCHAR(500)
+SELECT @P_SERVERNAME = INFO_VALUE FROM TB_INFO WHERE INFO_KEY = 'SERVERNAME'
+
+DECLARE @p_recipients AS VARCHAR(5000),@Profile_Name sysname
+
+				
+				SELECT @p_recipients= info_value
+				FROM ADMIN..[tb_info] 
+				WHERE [Info_Key]=@ToEmail
+
+				Select @ToEmail, @p_recipients
+  
+WHILE (1=1)
+	BEGIN
+		IF object_id('tempdb..#tempJobInfo') is not null BEGIN Drop Table #tempJobInfo END
+		SELECT DISTINCT
+			job.name, 
+			job.job_id, 
+			job.originating_server, 
+			activity.run_requested_date, 
+			DATEDIFF( SECOND, activity.run_requested_date, GETDATE() )/60 as Elapsed_Min, 
+			ders.estimated_completion_time/(1000*60) AS [ETA Min],
+--estimated_completion_time as ETA,
+start_execution_date
+into #tempJobInfo
+FROM
+msdb.dbo.sysjobs_view job
+JOIN msdb.dbo.sysjobactivity activity ON job.job_id = activity.job_id
+JOIN msdb.dbo.syssessions sess ON sess.session_id = activity.session_id
+--
+JOIN sys.sysprocesses sps 
+ON job.job_id =
+CONVERT(UNIQUEIDENTIFIER,CONVERT(BINARY(16),SUBSTRING(sps.program_name,CHARINDEX('Job 0x',sps.program_name)+4,34),1))
+--
+JOIN
+sys.dm_exec_requests AS ders ON  sps.spid=ders.session_id
+
+JOIN
+(
+SELECT
+MAX(
+ agent_start_date) AS max_agent_start_date
+FROM
+msdb.dbo.syssessions
+) sess_max
+ON sess.agent_start_date = sess_max.max_agent_start_date
+WHERE
+ program_name like '%SQLAgent - TSQL%' AND
+run_requested_date IS NOT NULL AND stop_execution_date IS NULL
+and
+(job.name = 'DBA - Maint - Index Defrag - Indexes CA'
+or job.name = 'DBA - Maint - Index Defrag - Large Indexes'
+or job.name = 'DBA - Maint - Index Defrag - Small Indexes'
+or job.name = 'DBA - Maint - DBCC CheckDB'
+or job.name = 'DBA - Maint - Update Stats'
+or job.name = 'DBA - Backup - Diff Backup'
+or job.name = 'DBA - Backup - Full Backup'
+or job.name = 'DBA - Backup - Full Backup SystemDB')
+--select * from #tempJobInfo
+		DECLARE @p_subject VARCHAR(1000)
+				,@Html AS VARCHAR(MAX)
+
+		IF (@SendMail=1) and exists (select * from #tempJobInfo)
+			BEGIN
+				SET @p_subject = @P_SERVERNAME +' (Information Only) '+ ' DBA Maintenance processes still running -- ' + '('+ 'DBA Mail -'+' ' + CONVERT(VARCHAR, getdate(), 9) + ')'
+					
+				DECLARE  
+					@Html_1 AS VARCHAR(MAX)
+					,@HtmlFirstTable_Title AS VARCHAR(MAX) = '<html><p><u><strong><span style="background-color:#eeeeee;">Following DBA job/s still going on.</span></strong></u></p></body></html>'
+					,@SQLText_1 AS VARCHAR(5000)=  'select * from #tempJobInfo'
+					
+				EXECUTE p_DBA_ConvertTableToHtml @SQLText_1,@Html_1 OUTPUT
+					
+				SET @Html = @HtmlFirstTable_Title + @Html_1
+
+
+				SELECT @Profile_Name= info_value
+					FROM ADMIN..[tb_info] 
+					WHERE [Info_Key]= 'Current-DBA-Profile-Name'
+
+				EXEC msdb..sp_send_dbmail
+					@Profile_name	= @Profile_Name
+					,@recipients	= @p_recipients 
+					,@subject		= @p_subject
+					,@body			= @Html
+					,@body_format	='html'
+					,@importance	= 'high'
+			END
+		ELSE
+			BREAK
+
+
+
+		WAITFOR DELAY '00:05:00'
+	END
+
+
+GO
+
