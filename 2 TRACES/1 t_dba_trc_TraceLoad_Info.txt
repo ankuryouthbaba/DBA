@@ -1,0 +1,32 @@
+USE [ADMIN]
+GO
+
+/****** Object:  Table [dbo].[t_dba_trc_TraceLoad_Info]    Script Date: 11/30/2021 3:57:49 AM ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+CREATE TABLE [dbo].[t_dba_trc_TraceLoad_Info](
+	[Rowid] [int] IDENTITY(1,1) NOT NULL,
+	[Row_Count] [int] NULL,
+	[Trace_Start_Date] [datetime] NULL,
+	[Last_Event_Time] [datetime] NULL,
+	[TraceFile_Path] [nvarchar](4000) NULL,
+	[FileStatus] [int] NULL,
+	[Completed_Flag] [bit] NULL,
+	[Rec_Created_Dt] [datetime] NULL,
+	[Rec_Updated_Dt] [datetime] NULL
+) ON [PRIMARY]
+GO
+
+ALTER TABLE [dbo].[t_dba_trc_TraceLoad_Info] ADD  DEFAULT ((0)) FOR [Completed_Flag]
+GO
+
+ALTER TABLE [dbo].[t_dba_trc_TraceLoad_Info] ADD  DEFAULT (getdate()) FOR [Rec_Created_Dt]
+GO
+
+ALTER TABLE [dbo].[t_dba_trc_TraceLoad_Info] ADD  DEFAULT (getdate()) FOR [Rec_Updated_Dt]
+GO
+
