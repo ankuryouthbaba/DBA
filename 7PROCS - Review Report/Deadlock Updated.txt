@@ -1,0 +1,220 @@
+use Admin
+GO
+
+GO
+DROP EVENT NOTIFICATION N_dba_DeadLockNotificationEvent ON SERVER
+GO
+DROP ROUTE R_dba_DeadLockNotificationRoute
+GO
+DROP SERVICE S_dba_DeadlockNotificationSvc
+GO
+DROP QUEUE Q_dba_DeadLockNotificationQueue
+
+GO
+WAITFOR DELAY '00:00:01' 
+GO
+USE MASTER
+GO
+ALTER DATABASE [Admin] SET offline with rollback immediate -- remove connections from the database. 
+GO
+WAITFOR DELAY '00:00:01' 
+GO
+ALTER DATABASE [Admin] SET online -- bring database online
+GO
+WAITFOR DELAY '00:00:01' 
+GO
+ALTER DATABASE [Admin] SET DISABLE_BROKER -- enable Service broker on DBAdmin Database. 
+GO
+WAITFOR DELAY '00:00:03' 
+GO
+ALTER DATABASE Admin SET TRUSTWORTHY OFF
+GO
+
+WAITFOR DELAY '00:00:01' 
+GO
+ALTER DATABASE [Admin] SET ENABLE_BROKER -- enable Service broker on DBAdmin Database. 
+GO
+WAITFOR DELAY '00:00:01' 
+GO
+ALTER DATABASE Admin SET TRUSTWORTHY ON
+GO
+WAITFOR DELAY '00:00:01' 
+GO
+USE Admin
+GO
+
+
+ /* Create Event Notification Queue */
+--Queues store messages. When a message arrives for a service, Service Broker puts the message on the queue associated with the service.
+
+		  CREATE QUEUE Q_dba_DeadLockNotificationQueue
+		  WITH STATUS = ON,
+		  ACTIVATION (
+ 		  PROCEDURE_NAME = p_DBA_DeadlockEvents,
+ 		  MAX_QUEUE_READERS = 1,
+		  EXECUTE AS 'dbo' );
+
+
+ /* Create Event Notification Services */
+--A Service Broker service is a name for a specific task or set of tasks. Service Broker uses the name of the service to route messages, deliver messages to the correct queue within a --database, and enforce the contract for a conversation.
+
+		  CREATE SERVICE S_dba_DeadlockNotificationSvc
+		  ON QUEUE Q_dba_DeadLockNotificationQueue
+		  ([http://schemas.microsoft.com/SQL/Notifications/PostEventNotification])
+
+
+ /* Create route for the DeadlockNotificationSvc */
+--Adds a new route to the routing table for the current database. For outgoing messages, Service Broker determines routing by checking the routing table in the local database. For         --messages on conversations that originate in another instance, including messages to be forwarded, Service Broker checks the routes in msdb.
+--when a route specifies 'LOCAL' for the next_hop_address, the message is delivered to a service within the current instance of SQL Server.
+--When a route specifies 'TRANSPORT' for the next_hop_address, the network address is determined based on the network address in the name of the service. A route that specifies              --'TRANSPORT' might not specify a service name or broker instance.
+
+		  CREATE ROUTE R_dba_DeadLockNotificationRoute
+  		  WITH SERVICE_NAME = 'S_dba_DeadlockNotificationSvc',
+  	          ADDRESS = 'LOCAL';
+  
+
+ /* Create Event Notification for the deadlock_graph event. */
+  CREATE EVENT NOTIFICATION N_dba_DeadLockNotificationEvent
+  ON SERVER
+  FOR DEADLOCK_GRAPH
+  TO SERVICE
+    'S_dba_DeadlockNotificationSvc',
+    'current database'
+  GO
+  
+  
+
+
+ /* Create DeadlockEvents table (to hold all of our deadlock details). */
+  CREATE TABLE dbo.t_Dba_DeadlockEvents (
+   DeadlockID INT IDENTITY(1,1),
+   EventMsg XML,
+   EventDate DATETIME NOT NULL CONSTRAINT df_t_Dba_DeadlockEvents_EventDate DEFAULT (GETDATE())
+  )
+  GO
+
+ /* Procedure writes the deadlock event to DeadlockEvents, and emails our DBA Team. */
+
+
+USE [Admin]
+GO
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+CREATE PROCEDURE [dbo].[p_DBA_DeadlockEvents]
+ AS
+ SET NOCOUNT ON;
+/* Captures our deadlocks, writes them into DeadlockEvents table, and emails DBA Team. */
+  DECLARE @msgBody XML   
+  DECLARE @dlgId uniqueidentifier
+  DECLARE @sendMail BIT=1,@ToEmail VARCHAR(500)='DBA_TEST'
+
+  WHILE(1=1)
+  BEGIN
+      BEGIN TRY   
+        DECLARE  @EventDateTime DATETIME  
+
+        /* Process messages from queue one at a time. */
+        ;RECEIVE TOP(1) @msgBody = message_body, @dlgId = conversation_handle,@EventDateTime=GETDATE()
+        FROM dbo.Q_dba_DeadLockNotificationQueue
+
+
+         /* Exit when whole queue is processed. */
+         IF @@ROWCOUNT = 0
+         BEGIN
+               IF @@TRANCOUNT > 0
+               BEGIN
+                   ROLLBACK;
+               END 
+               BREAK;
+        END
+
+     /* Write event data into our DeadlockEvents entity. */
+     INSERT dbo.t_Dba_DeadlockEvents (eventMsg)
+     SELECT @msgBody
+     
+          IF EXISTS (SELECT * FROM [tempdb].[dbo].[sysobjects]
+        WHERE name = '##Temp_Deadlock_Graph' AND type in (N'U'))
+        DROP TABLE ##Temp_Deadlock_Graph
+     
+     SELECT  @msgBody.query('./EVENT_INSTANCE/TextData/deadlock-list') AS Deadlock_Graph INTO ##Temp_Deadlock_Graph  
+
+     
+    --DECLARE @TEMP_TABLE_DEADLOCK SYSNAME ='#Temp_Deadlock_Graph_'+replace(convert(varchar(100),NEWID()), '-', '')
+    --SELECT  @msgBody.query('./EVENT_INSTANCE/TextData/deadlock-list') AS Deadlock_Graph INTO @TEMP_TABLE_DEADLOCK
+       
+
+----- new variables
+Declare @p_recipients VARCHAR(2000)
+,@p_subject VARCHAR(MAX)
+,@p_body NVARCHAR(MAX)
+,@SQLQuery [nvarchar](max)
+,@MailBody [nvarchar](max)
+,@AttachedFileName [nvarchar](256)= @@SERVERNAME + '_Deadlock_Notification_' +replace(replace(replace(replace(CONVERT(varchar(50), GETDATE(), 120),'_',''),'-',''),':',''),' ','')+ '.xdl'
+
+SET @SQLQuery='SET NOCOUNT ON;SELECT Deadlock_Graph FROM ##Temp_Deadlock_Graph WITH (READUNCOMMITTED)'
+
+
+SET @MailBody = '
+A deadlock occurred at '+ CONVERT([varchar](50), @EventDateTime, 120)+ ' on SQL Server: ' + @@SERVERNAME + '.See attached xdl-file for deadlock details.
+NOTE:We are also printing the following deadlock graph which has been generated by SQL SERVER.
+'+CHAR(13)+CHAR(13)++CHAR(13)+CONVERT(Varchar(MAX),@msgBody)
+
+IF @sendMail=1
+            BEGIN    
+                    SET @p_subject = @@SERVERNAME + ' - Deadlock occurred Notification at '+ CAST(GETDATE() AS VARCHAR)
+						SELECT @p_recipients= info_value
+						FROM ADMIN..[tb_info] 
+						WHERE [Info_Key]=@ToEmail
+              
+              Select @ToEmail, @p_recipients
+							SET @p_recipients =ISNULL(@p_recipients,@ToEmail)	
+              
+							SELECT @p_recipients Recipients, @ToEmail ToEmail
+							
+
+                    /* Send email to your DBA Team. */
+                    EXEC msdb.dbo.sp_send_dbmail
+                      --@profile_name = 'DBMAIL_Profile1',
+                      @recipients =@p_recipients,
+                      @subject = @p_subject,
+                      @body=@MailBody,
+                      @query = @SQLQuery,
+                      @attach_query_result_as_file = 1 ,
+                      @query_attachment_filename = @AttachedFileName ,
+                      @importance = 'High',
+                      @query_result_header = 0,
+                      @query_result_width = 32767,
+                      @query_no_truncate = 1
+                      
+            END
+
+      IF @@TRANCOUNT > 0
+      BEGIN
+         COMMIT;
+      END
+
+  END TRY
+  BEGIN CATCH
+
+     IF @@TRANCOUNT > 0
+     BEGIN
+         ROLLBACK;
+     END
+
+      /* Write error(s) into the Event log. */
+      DECLARE @errorNumber BIGINT, @errorMessage nvarchar(2048), @dbName nvarchar(128)
+      SELECT @errorNumber = ERROR_NUMBER(), @errorMessage = ERROR_MESSAGE(), @dbName = DB_NAME()
+      RAISERROR (N'Error receiving Service Broker message from  Q_dba_DeadLockNotificationsQueue.
+      DATABASE Name: %s; Error number: %I64d; Error Message: %s',
+      16, 1, @dbName, @errorNumber, @errorMessage) WITH LOG;
+
+  END CATCH;
+END
+
+SET NOCOUNT OFF;
+GO
+
+/* When SUCCESS 
+ SELECT * FROM sys.server_event_notifications */

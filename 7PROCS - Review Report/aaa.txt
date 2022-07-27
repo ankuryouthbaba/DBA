@@ -1,0 +1,199 @@
+USE [ADMIN]
+GO
+
+/****** Object:  StoredProcedure [dbo].[p_dba_show_Large_tables_all_DBs]    Script Date: 12/7/2021 8:26:01 AM ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+CREATE PROC [dbo].[p_dba_show_Large_tables_all_DBs]
+	
+	@Databasename VARCHAR(500) = ''
+	,@MinSizeMB INT = 5000
+	,@Sendmail BIT = 0
+	,@ToEmail VARCHAR(50) = ''
+	,@Execute_Flag bit = 1
+	AS
+	
+	SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED
+	SET NOCOUNT ON
+	
+	/***********************************************INTRODUCTION***************************************************
+	Name of the Proc  : p_dba_show_Large_tables
+	Purpose of Proc   : To know and show the size of tables asssociated with Databases on the server.
+	Syntax of Proc	  : EXEC p_dba_show_Large_tables @MinSizeMB = 1000, @Databasename = 'database_name', @SendMail = 1, @ToEmail = 'Test_Email'
+	****************************************************************************************************************/
+	/***********************************************BEGIN TRY ******************************************************/
+
+	BEGIN TRY 
+
+	/*******************************************BUSINESS LOGIC STARTS***********************************************/
+	--DECLARE THE VARIABLES
+	DECLARE @P_SERVERNAME VARCHAR(100)
+	DECLARE @Profile_Name VARCHAR(100)
+	DECLARE @p_subject AS VARCHAR(500)
+	DECLARE @Html AS VARCHAR(MAX)
+	DECLARE @Html_Title AS VARCHAR(500)
+	DECLARE @Html_Large_tables AS VARCHAR(MAX)
+	DECLARE @SQL_Large_tables AS VARCHAR(MAX)
+	DECLARE @p_RowCount INT=0
+	
+	DECLARE @p_recipients VARCHAR(1000)
+  	SELECT @p_recipients= info_value
+	FROM [tb_info] WHERE [Info_Key]=@ToEmail
+	SET @p_recipients =ISNULL(@p_recipients,@ToEmail)
+	--SELECT @p_recipients Recipients_list
+			
+	IF OBJECT_ID('tempdb..#tempsize', 'U') IS NOT NULL DROP TABLE #tempsize
+	IF OBJECT_ID('tempdb..#Large_table', 'U') IS NOT NULL DROP TABLE #Large_table
+	IF OBJECT_ID('tempdb..#tempsizefinal', 'U') IS NOT NULL DROP TABLE #tempsizefinal
+	IF OBJECT_ID('tempdb..#Large_table_final', 'U') IS NOT NULL DROP TABLE #Large_table_final
+	IF OBJECT_ID('tempdb..#Large_table_Temp', 'U') IS NOT NULL DROP TABLE #Large_table_Temp
+	IF OBJECT_ID('tempdb..##Large_tables_final', 'U') IS NOT NULL DROP TABLE ##Large_tables_final
+	IF OBJECT_ID('tempdb..#Large_table_inter_final', 'U') IS NOT NULL DROP TABLE #Large_table_inter_final
+	
+	------------------- PART 1, Populate the commands ----------------------------------
+	------------------- PART 1, Populate the commands ----------------------------------
+	------------------- PART 1, Populate the commands ----------------------------------
+	
+	CREATE TABLE #Large_table (Database_Name VARCHAR(500), TableName VARCHAR(500), Total_SpaceMB VARCHAR(MAX), RowCounts VARCHAR(100))
+	--SELECT name FROM sys.databases
+	SELECT ROW_NUMBER() OVER(ORDER BY  db.name asc ) as Status_REC_ID,name, 'USE ' + name + '
+	IF OBJECT_ID(''tempdb..#tempsize'', ''U'') IS NOT NULL DROP TABLE #tempsize
+	IF OBJECT_ID(''tempdb..#tempsizefinal'', ''U'') IS NOT NULL DROP TABLE #tempsizefinal
+	SELECT 
+	DB_NAME() as Database_Name,t.NAME AS TableName,
+		i.name as indexName,i.[Object_ID],i.index_id,p.partition_id,
+		sum(p.rows) as RowCounts
+		into #tempsize
+	FROM 
+		sys.tables t
+	INNER JOIN      
+		sys.indexes i ON t.OBJECT_ID = i.object_id
+	INNER JOIN
+		sys.partitions p ON i.object_id = p.OBJECT_ID AND i.index_id = p.index_id
+	WHERE (i.index_id <= 1) 
+	GROUP BY t.name, i.[object_id], i.index_id,i.name, p.partition_id
+	SELECT t.Database_Name, t.TableName,
+			(sum(a.total_pages) * 8) / 1024 as TotalSpaceMB,t.RowCounts
+	INTO #tempsizefinal
+	FROM #tempsize t
+	LEFT JOIN sys.allocation_units a ON t.partition_id = a.container_id
+	GROUP BY t.Database_Name,t.TableName,t.indexName, t.[object_id], t.index_id,t.partition_id,t.RowCounts
+	ORDER BY Database_Name, TotalSpaceMB DESC
+	
+	INSERT INTO #Large_table SELECT tf.Database_Name, tf.TableName, tf.TotalSpaceMB--CONVERT(VARCHAR(MAX),tf.TotalSpaceMB)
+	,SUBSTRING(CONVERT(VARCHAR, CAST(tf.RowCounts AS MONEY), 1),1, LEN(CONVERT(VARCHAR, CAST(tf.RowCounts AS MONEY), 1))-3)
+	FROM #tempsizefinal tf' SQL_command
+	into #t_dba_collect_SQL_command
+	FROM sys.databases db
+	WHERE name NOT IN ('master','tempdb','model')
+	AND state_desc = 'ONLINE'
+	
+	--SELECT 'Populated' Query_status,* FROM #t_dba_collect_SQL_command
+	
+	------------------- PART 2, Execute the commands ----------------------------------
+	------------------- PART 2, Execute the commands ----------------------------------
+	------------------- PART 2, Execute the commands ----------------------------------
+	IF (@Execute_Flag = 1)
+				BEGIN
+						SET NOCOUNT ON 
+						DECLARE @status_rec_id SYSNAME 
+						DECLARE @ExecuteSQL   NVARCHAR(4000) = '' 
+				 
+						DECLARE curExecuteSQL CURSOR FORWARD_ONLY STATIC FOR 
+						SELECT status_rec_id  from 
+ 						#t_dba_collect_SQL_command 
+						ORDER BY Status_REC_ID -- check the execution filter on size, usage, rowmod counter etc 
+
+						OPEN curExecuteSQL 
+						FETCH NEXT FROM curExecuteSQL INTO @status_rec_id 
+						WHILE @@FETCH_STATUS = 0 
+						   BEGIN 
+
+						   SELECT @ExecuteSQL =  SQL_command from #t_dba_collect_SQL_command  where status_rec_id = @status_rec_id 
+
+							EXEC SP_EXECUTESQL @ExecuteSQL 
+
+				       
+						FETCH NEXT FROM curExecuteSQL INTO @status_rec_id  
+
+						   END  
+				 
+						CLOSE curExecuteSQL
+						DEALLOCATE curExecuteSQL
+	
+	SELECT * INTO #Large_table_Temp FROM #Large_table WHERE (Database_Name = CASE WHEN @Databasename = '' THEN Database_Name ELSE @Databasename END)
+	--AND Database_Name NOT IN ('master','tempdb','model') --AND CONVERT(INT,Total_SpaceMB) > @MinSizeMB
+	ORDER BY Total_SpaceMB DESC --Database_Name
+	
+	ALTER TABLE #Large_table_Temp
+	ALTER COLUMN Total_SpaceMB INT
+	
+	--SELECT ROW_NUMBER() OVER(ORDER BY Database_name ASC,Total_SpaceMB DESC) AS RowNum,* 
+	SELECT ROW_NUMBER() OVER(ORDER BY Total_SpaceMB DESC) AS RowNum,*  
+	INTO #Large_table_inter_final FROM #Large_table_Temp WHERE Total_SpaceMB > @MinSizeMB
+	--ORDER BY 
+	--Database_name,
+	--Total_SpaceMB DESC
+	
+	SELECT Database_Name,	TableName,	Total_SpaceMB,	RowCounts INTO #Large_table_final FROM #Large_table_inter_final
+	
+	ALTER TABLE #Large_table_final
+	ALTER COLUMN Total_SpaceMB VARCHAR(MAX)
+	
+	UPDATE #Large_Table_final
+	SET Total_SpaceMB = CASE WHEN Total_SpaceMB > 10000 THEN '<b><font color = Red>' + Total_SpaceMB + '</b></font>' ELSE Total_SpaceMB END
+	
+	SELECT * INTO ##Large_Tables_final FROM #Large_Table_final
+	--SELECT * FROM ##Large_Tables_final
+	
+	/*******************************************BUSINESS LOGIC ENDS***********************************************/
+
+   /******************************************SEND MAIL LOGIC STARTS*********************************************/
+  	
+  	SET @p_RowCount=@@ROWCOUNT
+  	
+	IF @SendMail = 0
+	BEGIN
+	--SELECT * FROM #Large_table_final
+	RETURN
+	END
+	If (@SendMail =1 AND @p_RowCount>0)
+	BEGIN
+	--SELECT * FROM #Large_table_final
+	SELECT @P_SERVERNAME = Info_Value FROM TB_INFO WHERE Info_Key = 'SERVERNAME'
+	SELECT @Profile_Name= info_value FROM TB_INFO WHERE [Info_Key]= 'Current-DBA-Profile-Name'
+	SELECT @SQL_Large_tables =  'SELECT * FROM ##Large_Tables_final'
+	SELECT @p_subject =  @P_SERVERNAME +' (Report) '+ '--  Showing status of Top Largest Tables of Databases ' + '('+ 'DBA Mail -'+' ' + CONVERT(VARCHAR, getdate(), 9) + ')'	
+	SELECT @Html_Title = '<html><p><u><strong><span style="background-color:#eeeeee;"> Table showing the top Largest Tables </span></strong></u></p> <br> </body></html>'
+
+	EXECUTE  dbo.p_DBA_ConvertTableToHtml @SQL_Large_tables,@Html_Large_tables OUTPUT   
+
+	SELECT @Html  = @Html_Title + @Html_Large_tables
+	
+	SET @Html = REPLACE(@Html,'&lt;','<')
+	SET @Html = REPLACE(@Html,'&gt;','>')
+
+	EXEC msdb.dbo.SP_SEND_DBMAIL
+			@Profile_name	=	@Profile_Name
+			,@recipients	=	@p_recipients 
+			,@subject		=	@p_subject
+			,@body			=	@Html
+			,@body_format	=	'html'	
+	END
+	END
+	/*******************************************SEND MAIL LOGIC ENDS***********************************************/
+	END TRY
+	
+	/*******************************************BEGIN CATCH********************************************************/
+	BEGIN CATCH
+		EXEC p_dba_Call_SqlErrorlog @ObjectID = @@PROCID;
+	END CATCH
+
+
+GO
+

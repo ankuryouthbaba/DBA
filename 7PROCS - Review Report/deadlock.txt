@@ -1,0 +1,20 @@
+USE [ADMIN]
+GO
+
+/***** Object:  Table [dbo].[t_Dba_DeadlockEvents]    Script Date: 12/7/2021 9:47:06 AM *****/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+CREATE TABLE [dbo].[t_Dba_DeadlockEvents](
+	[DeadlockID] [int] IDENTITY(1,1) NOT NULL,
+	[EventMsg] [xml] NULL,
+	[EventDate] [datetime] NOT NULL
+) ON [PRIMARY] TEXTIMAGE_ON [PRIMARY]
+GO
+
+ALTER TABLE [dbo].[t_Dba_DeadlockEvents] ADD  CONSTRAINT [df_t_Dba_DeadlockEvents_EventDate]  DEFAULT (getdate()) FOR [EventDate]
+GO
+

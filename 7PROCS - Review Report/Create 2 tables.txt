@@ -1,0 +1,32 @@
+--SELECT * FROM sys.server_event_notifications 
+
+
+--1.	Create two tables
+drop table rr
+drop table tt
+
+create table rr(roll int, name varchar(50))
+create table tt(roll int, name varchar(50))
+
+--2.	Populating both the tables
+insert into rr(roll, name) values(1, 'SQL Server Base rr')
+insert into tt(roll, name) values(2, 'SQL Server Base tt')
+
+--3. Open a SQL query window and run below command
+
+-->> Execute below query in first window
+
+Begin Tran
+update rr set roll=5 where roll=1
+waitfor delay'00:00:15'
+update tt set roll=6 where roll=2
+commit
+
+--4. Open a another SQL query Window and execute below query
+-->> Execute below query in second window
+Begin  Tran
+update tt set roll=10 where roll=2
+waitfor delay'00:00:15'
+update rr set roll=11 where roll=1
+commit
+
