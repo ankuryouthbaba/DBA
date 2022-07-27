@@ -1,0 +1,738 @@
+USE [Admin]
+GO
+
+/****** Object:  StoredProcedure [dbo].[p_dba_Review_report]    Script Date: 11/26/2021 9:53:56 AM ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+CREATE PROC [dbo].[p_dba_Review_report]
+( @sendMail BIT = 0
+, @ToEmail NVARCHAR(1000)=''
+, @show_Collectstatinfo BIT = 1
+, @show_trace_info BIT = 1
+, @show_databases_info BIT = 1
+, @show_backupfile_info_on_DR_Server BIT = 1
+, @show_system_info BIT = 1
+, @show_blocking_info BIT = 0
+, @show_deadlock_info BIT = 0
+, @Show_index_defrag_info BIT = 1
+, @show_counter_info BIT = 1
+, @show_Current_counter_info BIT = 0
+, @show_Large_tables_info BIT = 1
+, @show_extent_change_info BIT = 0
+, @show_Restore_info BIT = 0
+, @show_top_memory_clerk_info BIT = 1
+, @show_Replication_info BIT =1
+, @show_Recent_DBCC_Checkdb BIT = 0
+) 
+AS
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED
+SET NOCOUNT ON
+
+	/***********************************************INTRODUCTION***************************************************
+	Name of the Proc  : p_dba_Maintenance_review_report
+	Purpose of Proc   : To show the information about various papameters related to DBA maintenance on the server
+	Syntax of Proc	  : EXEC p_dba_Maintenance_review_report 
+						@SEndMail = 1, 
+						@ToEmail = 'Test_Email',
+						@show_system_info =1,
+						@show_Collectstatinfo =1,
+						@show_trace_info  =1,
+						@show_databases_info  =1,
+						@show_blocking_info  =1,
+						@show_deadlock_info  =1,
+						@Show_index_defrag_info  =1,
+						@show_counter_info  =1,
+						@show_Current_counter_info = 1,
+						@show_backupfile_info_on_DR_Server  =1,
+						@show_Large_tables_info  = 1,
+						@show_extent_change_info  = 0,
+						@show_Restore_info  = 0,
+						@show_Replication_info  = 0,
+						@show_top_memory_clerk_info  = 1
+	****************************************************************************************************************/
+	
+	/***********************************************BEGIN TRY ******************************************************/
+
+	--BEGIN TRY 
+
+	/*******************************************BUSINESS LOGIC STARTS***********************************************/
+	
+	DECLARE @HtmlMin VARCHAR(MAX)=''
+	, @HtmlMinFirstTable VARCHAR(MAX)=''
+	, @HtmlFillerTable VARCHAR(MAX)
+
+	SET @HtmlFillerTable = '<HTML>
+	<BR>
+	<BR>
+	</HTML>'	
+
+			
+	IF @show_Collectstatinfo=1
+			BEGIN
+							
+			if OBJECT_ID(N'tempdb..#t_dba_collectstatinfo') is not null drop table #t_dba_collectstatinfo
+			
+		    Declare @Dashboard_Count_collectstatinfo int= 0
+		    Declare @caption_collectstatinfo varchar(1000)  ='Data for Collectionstatinfo'
+			create table #t_dba_collectstatinfo
+			([Stats_Name]  varchar(100),
+			[Last_Rec_Datetime] varchar(100),
+			[Oldest_Rec_Datetime] varchar(100),
+			[Latency_Duration] varchar(100),
+			[Latency_Threshold] varchar(100))
+			
+			INSERT INTO #t_dba_collectstatinfo
+			EXEC p_dba_show_Collectstatinfo 
+			@Show_Counter = 0
+			,@Show_Collect_IO_Stats = 0
+			,@Collect_Wait_Stats = 0
+			,@Show_DISK_IO_File_Stats = 0
+			,@Show_Longrunning_Trans_Alert = 0
+			,@Show_Blocking_alert = 1
+			,@Show_Deadlock_alert = 1
+			
+			SELECT @Dashboard_Count_collectstatinfo = @@ROWCOUNT
+			SELECT * FROM #t_dba_collectstatinfo
+			
+		END
+			
+	IF (@Dashboard_Count_Collectstatinfo >=1 AND @show_Collectstatinfo=1)
+			BEGIN
+				DECLARE @Html_Title_collectstatinfo VARCHAR(MAX)='',@Html_collectstatinfo VARCHAR(MAX)=''
+				DECLARE @SQLText_collectstatinfo AS VARCHAR(MAX)=  'select * from #t_dba_collectstatinfo'
+				EXECUTE  dbo.p_DBA_ConvertTableToHtml @SQLText_collectstatinfo,@Html_collectstatinfo OUTPUT   
+				SET @Html_Title_collectstatinfo = '<html><p><u><strong><span style="background-color:#eeeeee;">' + @caption_collectstatinfo + '</span></strong></u></p></body></html>'
+				SET @HtmlMin = @Html_Title_collectstatinfo + @Html_collectstatinfo 
+			END
+		ELSE IF (@show_Collectstatinfo=0)
+			BEGIN
+				SET @HtmlMin = @HtmlMin --+ @HtmlFillerTable
+			END
+		ELSE
+			BEGIN
+				SET @Html_Title_collectstatinfo = '<html><p><u><strong><span style="background-color:#eeeeee;">' + @caption_collectstatinfo + '</span></strong></u></p></body></html>'
+				SET @HtmlMin = @HtmlMin + @HtmlFillerTable + @Html_Title_collectstatinfo + @HtmlFillerTable
+			END	
+
+
+IF @show_trace_info = 1
+	BEGIN					
+	if OBJECT_ID(N'tempdb..#t_dba_Trace_info') is not null drop table #t_dba_Trace_info
+			
+		    Declare @Dashboard_Count_Trace_info int= 0
+		    Declare @caption_Trace_info varchar(1000)  ='Data for Trace_info'
+			create table #t_dba_Trace_info
+			(ID varchar(50),Name VARCHAR(100),Info_Value VARCHAR(200))
+			
+			INSERT INTO #t_dba_Trace_info
+			EXEC p_dba_show_tracedata
+			SELECT @Dashboard_Count_Trace_info = @@ROWCOUNT
+			SELECT * FROM #t_dba_Trace_info
+			
+		END
+			
+	IF (@Dashboard_Count_Trace_info >=1 AND @show_Trace_info=1)
+			BEGIN
+				DECLARE @Html_Title_Trace_info VARCHAR(MAX)='',@Html_Trace_info VARCHAR(MAX)=''
+				DECLARE @SQLText_Trace_info AS VARCHAR(MAX)=  'select * from #t_dba_Trace_info'
+				EXECUTE  dbo.p_DBA_ConvertTableToHtml @SQLText_Trace_info,@Html_Trace_info OUTPUT   
+				SET @Html_Title_Trace_info = '<html><p><u><strong><span style="background-color:#eeeeee;">' + @caption_Trace_info + '</span></strong></u></p></body></html>'
+				SET @HtmlMin =  @HtmlMin + @HtmlFillerTable + @Html_Title_Trace_info + @Html_Trace_info 
+			END
+		ELSE IF (@show_Trace_info=0)
+			BEGIN
+				SET @HtmlMin = @HtmlMin --+ @HtmlFillerTable
+			END
+		ELSE
+			BEGIN
+				SET @Html_Title_Trace_info = '<html><p><u><strong><span style="background-color:#eeeeee;">' + @caption_Trace_info + '</span></strong></u></p></body></html>'
+				SET @HtmlMin = @HtmlMin + @HtmlFillerTable + @Html_Title_Trace_info + @HtmlFillerTable
+			END		
+
+	IF @show_Databases_info	=1
+			BEGIN
+							
+			if OBJECT_ID(N'tempdb..#t_dba_Databases_info') is not null drop table #t_dba_Databases_info
+			
+		    Declare @Dashboard_Count_Databases_info int= 0
+		    Declare @caption_Databases_info varchar(1000)  ='Data for Databases_info'
+			create table #t_dba_Databases_info
+			([Server Name] [varchar](500) NULL,
+			[Database Name] [varchar](500) NULL,
+			[Recovery Model] [varchar](500) NULL,
+			[Database Status] [varchar](500) NULL,
+			[Modification Type] [varchar](500) NULL,
+			[StandBy] [int] NULL,
+			[Accessibility] [varchar](500) NULL,
+			[Full Backup] [varchar](500) NULL,
+			[Full Backup Date] [varchar](500) NULL,
+			[Log Backup] [varchar](500) NULL,
+			[Log Backup Date] [varchar](500) NULL)
+			
+			INSERT INTO #t_dba_Databases_info
+			EXEC p_dba_show_DatabasesStatus
+			SELECT @Dashboard_Count_Databases_info = @@ROWCOUNT
+			SELECT * FROM #t_dba_Databases_info
+			
+		END
+			
+	IF (@Dashboard_Count_Databases_info >=1 AND @show_Databases_info=1)
+			BEGIN
+				DECLARE @Html_Title_Databases_info VARCHAR(MAX)='',@Html_Databases_info VARCHAR(MAX)=''
+				DECLARE @SQLText_Databases_info AS VARCHAR(MAX)=  'select * from #t_dba_Databases_info'
+				EXECUTE  dbo.p_DBA_ConvertTableToHtml @SQLText_Databases_info,@Html_Databases_info OUTPUT   
+				SET @Html_Title_Databases_info = '<html><p><u><strong><span style="background-color:#eeeeee;">' + @caption_Databases_info + '</span></strong></u></p></body></html>'
+				SET @HtmlMin = @HtmlMin + @HtmlFillerTable + @Html_Title_Databases_info + @Html_Databases_info 
+			END
+		ELSE IF (@show_Databases_info=0)
+			BEGIN
+				SET @HtmlMin = @HtmlMin --+ @HtmlFillerTable
+			END
+		ELSE
+			BEGIN
+				SET @Html_Title_Databases_info = '<html><p><u><strong><span style="background-color:#eeeeee;">' + @caption_Databases_info + '</span></strong></u></p></body></html>'
+				SET @HtmlMin = @HtmlMin + @HtmlFillerTable + @Html_Title_Databases_info + @HtmlFillerTable
+			END	
+
+
+IF @show_backupfile_info_on_DR_Server	=1
+			BEGIN
+							
+			if OBJECT_ID(N'tempdb..#t_dba_backupfile_info_on_DR_Server') is not null drop table #t_dba_backupfile_info_on_DR_Server
+			
+		    Declare @Dashboard_Count_backupfile_info_on_DR_Server int= 0
+		    Declare @caption_backupfile_info_on_DR_Server varchar(1000)  ='Data for backupfile_info_on_DR_Server'
+			create table #t_dba_backupfile_info_on_DR_Server
+			(S_No INT,
+			[Database] VARCHAR (500),
+			BackupDate VARCHAR (500),
+			BackupType VARCHAR (100),
+			BackupFile VARCHAR (500))
+			EXEC p_dba_Get_DR_Backup_FIle_Info --BACKUP FILE LOCATION IS NOT AVAILABLE IN ADMIN_DB5..TB_INFO
+			INSERT INTO #t_dba_backupfile_info_on_DR_Server
+			SELECT * FROM ##DR_BackupFiles_FinalOuput
+			SELECT @Dashboard_Count_backupfile_info_on_DR_Server = @@ROWCOUNT
+			SELECT * FROM #t_dba_backupfile_info_on_DR_Server
+			
+		END
+			
+	IF (@Dashboard_Count_backupfile_info_on_DR_Server >=1 AND @show_backupfile_info_on_DR_Server=1)
+			BEGIN
+				DECLARE @Html_Title_backupfile_info_on_DR_Server VARCHAR(MAX)='',@Html_backupfile_info_on_DR_Server VARCHAR(MAX)=''
+				DECLARE @SQLText_backupfile_info_on_DR_Server AS VARCHAR(MAX)=  'select * from #t_dba_backupfile_info_on_DR_Server'
+				EXECUTE  dbo.p_DBA_ConvertTableToHtml @SQLText_backupfile_info_on_DR_Server,@Html_backupfile_info_on_DR_Server OUTPUT   
+				SET @Html_Title_backupfile_info_on_DR_Server = '<html><p><u><strong><span style="background-color:#eeeeee;">' + @caption_backupfile_info_on_DR_Server + '</span></strong></u></p></body></html>'
+				SET @HtmlMin = @HtmlMin + @HtmlFillerTable + @Html_Title_backupfile_info_on_DR_Server + @Html_backupfile_info_on_DR_Server 
+			END
+		ELSE IF (@show_backupfile_info_on_DR_Server=0)
+			BEGIN
+				SET @HtmlMin = @HtmlMin --+ @HtmlFillerTable
+			END
+		ELSE
+			BEGIN
+				SET @Html_Title_backupfile_info_on_DR_Server = '<html><p><u><strong><span style="background-color:#eeeeee;">' + @caption_backupfile_info_on_DR_Server + '</span></strong></u></p></body></html>'
+				SET @HtmlMin = @HtmlMin + @HtmlFillerTable + @Html_Title_backupfile_info_on_DR_Server + @HtmlFillerTable
+			END	
+
+IF @show_system_info = 1
+			BEGIN
+							
+			if OBJECT_ID(N'tempdb..#t_dba_system_info') is not null drop table #t_dba_system_info
+			
+		    Declare @Dashboard_Count_system_info int= 0
+		    Declare @caption_system_info varchar(1000)  ='Data for system_info'
+			create table #t_dba_system_info
+			(Check_ID int, CheckName varchar(500) null, Value varchar(100))
+			
+			EXEC p_dba_show_systeminformation 
+			INSERT INTO #t_dba_system_info
+			SELECT * FROM ##tempSQLChecks_final
+			SELECT @Dashboard_Count_system_info = @@ROWCOUNT
+			SELECT * FROM #t_dba_system_info
+			
+		END
+			
+	IF (@Dashboard_Count_system_info >=1 AND @show_system_info=1)
+			BEGIN
+				DECLARE @Html_Title_system_info VARCHAR(MAX)='',@Html_system_info VARCHAR(MAX)=''
+				DECLARE @SQLText_system_info AS VARCHAR(MAX)=  'select * from #t_dba_system_info'
+				EXECUTE  dbo.p_DBA_ConvertTableToHtml @SQLText_system_info,@Html_system_info OUTPUT   
+				SET @Html_Title_system_info = '<html><p><u><strong><span style="background-color:#eeeeee;">' + @caption_system_info + '</span></strong></u></p></body></html>'
+				SET @HtmlMin = @HtmlMin + @HtmlFillerTable + @Html_Title_system_info + @Html_system_info 
+			END
+		ELSE IF (@show_system_info=0)
+			BEGIN
+				SET @HtmlMin = @HtmlMin --+ @HtmlFillerTable
+			END
+		ELSE
+			BEGIN
+				SET @Html_Title_system_info = '<html><p><u><strong><span style="background-color:#eeeeee;">' + @caption_system_info + '</span></strong></u></p></body></html>'
+				SET @HtmlMin = @HtmlMin + @HtmlFillerTable + @Html_Title_system_info + @HtmlFillerTable
+			END	
+
+
+IF @show_blocking_info	=1
+			BEGIN
+							
+			if OBJECT_ID(N'tempdb..#t_dba_blocking_info') is not null drop table #t_dba_blocking_info
+			
+		    Declare @Dashboard_Count_blocking_info int= 0
+		    Declare @caption_blocking_info varchar(1000)  ='Data for blocking_info'
+			create table #t_dba_blocking_info
+			([Check_ID] INT,[Name] VARCHAR(500),[Value] VARCHAR(100))
+			INSERT INTO #t_dba_blocking_info
+			EXEC p_dba_show_Blockinginfo
+			SELECT @Dashboard_Count_blocking_info = @@ROWCOUNT
+			SELECT * FROM #t_dba_blocking_info
+			
+		END
+			
+	IF (@Dashboard_Count_blocking_info >=1 AND @show_blocking_info=1)
+			BEGIN
+				DECLARE @Html_Title_blocking_info VARCHAR(MAX)='',@Html_blocking_info VARCHAR(MAX)=''
+				DECLARE @SQLText_blocking_info AS VARCHAR(MAX)=  'select * from #t_dba_blocking_info'
+				EXECUTE  dbo.p_DBA_ConvertTableToHtml @SQLText_blocking_info,@Html_blocking_info OUTPUT   
+				SET @Html_Title_blocking_info = '<html><p><u><strong><span style="background-color:#eeeeee;">' + @caption_blocking_info + '</span></strong></u></p></body></html>'
+				SET @HtmlMin = @HtmlMin + @HtmlFillerTable + @Html_Title_blocking_info + @Html_blocking_info 
+			END
+		ELSE IF (@show_blocking_info=0)
+			BEGIN
+				SET @HtmlMin = @HtmlMin --+ @HtmlFillerTable
+			END
+		ELSE
+			BEGIN
+				SET @Html_Title_blocking_info = '<html><p><u><strong><span style="background-color:#eeeeee;">' + @caption_blocking_info + '</span></strong></u></p></body></html>'
+				SET @HtmlMin = @HtmlMin + @HtmlFillerTable + @Html_Title_blocking_info + @HtmlFillerTable
+			END
+------------------------------------------------------------------------------------------------------------
+IF @show_deadlock_info	=1
+			BEGIN
+							
+			if OBJECT_ID(N'tempdb..#t_dba_deadlock_info') is not null drop table #t_dba_deadlock_info
+			
+		    Declare @Dashboard_Count_deadlock_info int= 0
+		    Declare @caption_deadlock_info varchar(1000)  ='Data for deadlock_info'
+			create table #t_dba_deadlock_info
+			([Check_ID] INT ,[Check_Name] varchar(1000),[Value] VARCHAR(100))
+			EXEC p_dba_show_Deadlockinfo
+			INSERT INTO #t_dba_deadlock_info
+			SELECT * from ##deadlock_info --USING GLOBAL TABLE
+			SELECT @Dashboard_Count_deadlock_info = @@ROWCOUNT
+			SELECT * FROM #t_dba_deadlock_info
+			
+		END
+			
+	IF (@Dashboard_Count_deadlock_info >=1 AND @show_deadlock_info=1)
+			BEGIN
+				DECLARE @Html_Title_deadlock_info VARCHAR(MAX)='',@Html_deadlock_info VARCHAR(MAX)=''
+				DECLARE @SQLText_deadlock_info AS VARCHAR(MAX)=  'select * from #t_dba_deadlock_info'
+				EXECUTE  dbo.p_DBA_ConvertTableToHtml @SQLText_deadlock_info,@Html_deadlock_info OUTPUT   
+				SET @Html_Title_deadlock_info = '<html><p><u><strong><span style="background-color:#eeeeee;">' + @caption_deadlock_info + '</span></strong></u></p></body></html>'
+				SET @HtmlMin = @HtmlMin + @HtmlFillerTable + @Html_Title_deadlock_info + @Html_deadlock_info 
+			END
+		ELSE IF (@show_deadlock_info=0)
+			BEGIN
+				SET @HtmlMin = @HtmlMin --+ @HtmlFillerTable
+			END
+		ELSE
+			BEGIN
+				SET @Html_Title_deadlock_info = '<html><p><u><strong><span style="background-color:#eeeeee;">' + @caption_deadlock_info + '</span></strong></u></p></body></html>'
+				SET @HtmlMin = @HtmlMin + @HtmlFillerTable + @Html_Title_deadlock_info + @HtmlFillerTable
+			END	
+--------------------------------------------------------------------------------------------------
+
+IF @show_index_defrag_info	=1
+			BEGIN
+			if OBJECT_ID(N'tempdb..#t_dba_index_defrag_info') is not null drop table #t_dba_index_defrag_info
+		    Declare @Dashboard_Count_index_defrag_info int= 0
+		    Declare @caption_index_defrag_info varchar(1000)  ='Data for index_defrag_info'
+			create table #t_dba_index_defrag_info
+			(SrNo varchar(100)
+			,[Date] varchar(100)
+		    --,Start_Scan_Time varchar(100)
+		    --,End_Scan_time varchar(100)
+		    --,Scan_Count varchar(100)
+		    --,Scan_Page_count varchar(100)
+			,Start_Defrag_Time varchar(100)
+			,End_Defrag_Time varchar(100)
+			,Count_Index_Defragged varchar(100)
+			,Count_Pages_Defragged varchar(100)
+			--,[Total_Scan_Time(Min)] varchar(100)
+			,[Total_Defrag_Time(Min)] varchar(100))
+			
+			INSERT INTO #t_dba_index_defrag_info
+			EXEC p_dba_show_indexDefraginfo
+			SELECT @Dashboard_Count_index_defrag_info = @@ROWCOUNT
+			SELECT * FROM #t_dba_index_defrag_info
+			
+			--if OBJECT_ID(N'tempdb..#t_dba_index_defrag_info') is not null drop table #t_dba_index_defrag_info
+		 --   Declare @Dashboard_Count_index_defrag_info int= 0
+		 --   Declare @caption_index_defrag_info varchar(1000)  ='Data for index_defrag_info'
+			--create table #t_dba_index_defrag_info
+			--(SrNo varchar(100)
+			--,[Date] varchar(100)
+		 --   ,Start_Scan_Time varchar(100)
+		 --   ,End_Scan_time varchar(100)
+		 --   ,Scan_Count varchar(100)
+		 --   ,Scan_Page_count varchar(100)
+			--,Start_Defrag_Time varchar(100)
+			--,End_Defrag_Time varchar(100)
+			--,Defrag_Count varchar(100)
+			--,Defrag_Page_count varchar(100)
+			--,[Total_Scan_Time(Min)] varchar(100)
+			--,[Total_Defrag_Time(Min)] varchar(100))
+			
+			--INSERT INTO #t_dba_index_defrag_info
+			--EXEC p_dba_show_indexDefraginfo
+			--SELECT @Dashboard_Count_index_defrag_info = @@ROWCOUNT
+			--SELECT * FROM #t_dba_index_defrag_info
+			
+		END
+			
+	IF (@Dashboard_Count_index_defrag_info >=1 AND @show_index_defrag_info=1)
+			BEGIN
+				DECLARE @Html_Title_index_defrag_info VARCHAR(MAX)='',@Html_index_defrag_info VARCHAR(MAX)=''
+				DECLARE @SQLText_index_defrag_info AS VARCHAR(MAX)=  'select * from #t_dba_index_defrag_info'
+				EXECUTE  dbo.p_DBA_ConvertTableToHtml @SQLText_index_defrag_info,@Html_index_defrag_info OUTPUT   
+				SET @Html_Title_index_defrag_info = '<html><p><u><strong><span style="background-color:#eeeeee;">' + @caption_index_defrag_info + '</span></strong></u></p></body></html>'
+				SET @HtmlMin = @HtmlMin + @HtmlFillerTable + @Html_Title_index_defrag_info + @Html_index_defrag_info 
+			END
+		ELSE IF (@show_index_defrag_info=0)
+			BEGIN
+				SET @HtmlMin = @HtmlMin --+ @HtmlFillerTable
+			END
+		ELSE
+			BEGIN
+				SET @Html_Title_index_defrag_info = '<html><p><u><strong><span style="background-color:#eeeeee;">' + @caption_index_defrag_info + '</span></strong></u></p></body></html>'
+				SET @HtmlMin = @HtmlMin + @HtmlFillerTable + @Html_Title_index_defrag_info + @HtmlFillerTable
+			END	
+			
+----------------------------------------------------------------------------------------------------
+IF @show_counter_info	=1
+			BEGIN
+							
+			if OBJECT_ID(N'tempdb..#t_dba_counter_info') is not null drop table #t_dba_counter_info
+			
+		    Declare @Dashboard_Count_counter_info int= 0
+		    Declare @caption_counter_info varchar(1000)  ='Data for counter_info'
+			create table #t_dba_counter_info
+			([Date_]  VARCHAR(50),[hour_] VARCHAR(50),[Row_Count]  VARCHAR(50))
+			
+			INSERT INTO #t_dba_counter_info
+			EXEC p_dba_show_Counterdata
+			SELECT @Dashboard_Count_counter_info = @@ROWCOUNT
+			SELECT * FROM #t_dba_counter_info
+			
+		END
+			
+	IF (@Dashboard_Count_counter_info >=1 AND @show_counter_info=1)
+			BEGIN
+				DECLARE @Html_Title_counter_info VARCHAR(MAX)='',@Html_counter_info VARCHAR(MAX)=''
+				DECLARE @SQLText_counter_info AS VARCHAR(MAX)=  'select * from #t_dba_counter_info'
+				EXECUTE  dbo.p_DBA_ConvertTableToHtml @SQLText_counter_info,@Html_counter_info OUTPUT   
+				SET @Html_Title_counter_info = '<html><p><u><strong><span style="background-color:#eeeeee;">' + @caption_counter_info + '</span></strong></u></p></body></html>'
+				SET @HtmlMin = @HtmlMin + @HtmlFillerTable + @Html_Title_counter_info + @Html_counter_info 
+			END
+		ELSE IF (@show_counter_info=0)
+			BEGIN
+				SET @HtmlMin = @HtmlMin --+ @HtmlFillerTable
+			END
+		ELSE
+			BEGIN
+				SET @Html_Title_counter_info = '<html><p><u><strong><span style="background-color:#eeeeee;">' + @caption_counter_info + '</span></strong></u></p></body></html>'
+				SET @HtmlMin = @HtmlMin + @HtmlFillerTable + @Html_Title_counter_info + @HtmlFillerTable
+			END	
+------------------------------------------------------------
+IF @show_Current_counter_info= 1	
+		BEGIN	
+			
+			if OBJECT_ID(N'tempdb..#t_dba_Current_counter_info') is not null drop table #t_dba_Current_counter_info	
+			create table #t_dba_Current_counter_info (objectName	VARCHAR(500), CounterName VARCHAR(500),	InstanceName VARCHAR(500))
+
+			Declare @Dashboard_Count_Current_counter_info int = 0
+			Declare @caption_Current_counter_info varchar(1000)  ='Data for Current_counter_info '
+			
+			INSERT INTO #t_dba_Current_counter_info
+			EXEC p_dba_show_current_counters 
+			SELECT @Dashboard_Count_Current_counter_info = @@ROWCOUNT	
+			select * from #t_dba_Current_counter_info
+	IF (@Dashboard_Count_Current_counter_info >=1 AND @show_Current_counter_info=1)
+			BEGIN
+				DECLARE @Html_Title_Current_counter_info VARCHAR(MAX)='',@Html_Current_counter_info VARCHAR(MAX)=''
+				DECLARE @SQLText_Current_counter_info AS VARCHAR(MAX)=  'select * from #t_dba_Current_counter_info'
+				EXECUTE  dbo.p_DBA_ConvertTableToHtml @SQLText_Current_counter_info,@Html_Current_counter_info OUTPUT   
+				SET @Html_Title_Current_counter_info = '<html><p><u><strong><span style="background-color:#eeeeee;">' + @caption_Current_counter_info + ' </span></strong></u></p></body></html>'
+				SET @HtmlMin =@HtmlMin + @HtmlFillerTable +  @Html_Title_Current_counter_info + @Html_Current_counter_info
+			END
+		ELSE IF (@show_Current_counter_info=0)
+			BEGIN
+				SET @HtmlMin = @HtmlMin --+ @HtmlFillerTable
+			END
+		ELSE
+			BEGIN
+				SET @Html_Title_Current_counter_info = '<html><p><u><strong><span style="background-color:#eeeeee;">' + @caption_Current_counter_info + ' </span></strong></u></p></body></html>'
+				SET @HtmlMin = @HtmlMin + @HtmlFillerTable + @Html_Title_Current_counter_info + @HtmlFillerTable
+			END	
+	END
+
+	------------------------------------------------------------
+	
+IF @show_Large_tables_info	=1
+			BEGIN
+							
+			if OBJECT_ID(N'tempdb..#t_dba_Large_tables_info') is not null drop table #t_dba_Large_tables_info
+			
+		    Declare @Dashboard_Count_Large_tables_info int= 0
+		    Declare @caption_Large_tables_info varchar(1000)  ='Data for Large_tables_info'
+			create table #t_dba_Large_tables_info
+			(TableName  VARCHAR(100),[Size(MB)] VARCHAR(50),[Row_counts] varchar(50))
+			INSERT INTO #t_dba_Large_tables_info
+			EXEC admin..p_dba_show_Large_tables
+			
+			SELECT @Dashboard_Count_Large_tables_info = @@ROWCOUNT
+			SELECT * FROM #t_dba_Large_tables_info
+			
+		END
+			
+	IF (@Dashboard_Count_Large_tables_info >=1 AND @show_Large_tables_info=1)
+			BEGIN
+				DECLARE @Html_Title_Large_tables_info VARCHAR(MAX)='',@Html_Large_tables_info VARCHAR(MAX)=''
+				DECLARE @SQLText_Large_tables_info AS VARCHAR(MAX)=  'select * from #t_dba_Large_tables_info'
+				EXECUTE  dbo.p_DBA_ConvertTableToHtml @SQLText_Large_tables_info,@Html_Large_tables_info OUTPUT   
+				SET @Html_Title_Large_tables_info = '<html><p><u><strong><span style="background-color:#eeeeee;">' + @caption_Large_tables_info + '</span></strong></u></p></body></html>'
+				SET @HtmlMin = @HtmlMin + @HtmlFillerTable + @Html_Title_Large_tables_info + @Html_Large_tables_info 
+			END
+		ELSE IF (@show_Large_tables_info=0)
+			BEGIN
+				SET @HtmlMin = @HtmlMin --+ @HtmlFillerTable
+			END
+		ELSE
+			BEGIN
+				SET @Html_Title_Large_tables_info = '<html><p><u><strong><span style="background-color:#eeeeee;">' + @caption_Large_tables_info + '</span></strong></u></p></body></html>'
+				SET @HtmlMin = @HtmlMin + @HtmlFillerTable + @Html_Title_Large_tables_info + @HtmlFillerTable
+			END	
+-------------------------------------------------------------------------------------------------
+IF @show_Restore_info	=1
+			BEGIN
+							
+			if OBJECT_ID(N'tempdb..#t_dba_Restore_info') is not null drop table #t_dba_Restore_info
+			
+		    Declare @Dashboard_Count_Restore_info int= 0
+		    Declare @caption_Restore_info varchar(1000)  ='Data for Restore_info'
+			
+			create table #t_dba_Restore_info
+			(ID INT
+			,Destination_Database_Name VARCHAR(500)
+			,Source_Server_Name VARCHAR(500)
+			,Source_Database_Name VARCHAR(500)
+			,Source_DB_Bkup_End_date DATETIME
+			,Last_Restoration_Date DATETIME
+			,Days_Since_Last_Restore_dt VARCHAR(2000) 
+			,[Days_Diff_b/w_Restore_dt_and_Backup_dt] VARCHAR(100))
+			
+			INSERT INTO #t_dba_Restore_info
+			EXEC p_dba_show_Recent_restores
+			
+			SELECT @Dashboard_Count_Restore_info = @@ROWCOUNT
+			SELECT * FROM #t_dba_Restore_info
+			
+		END
+			
+	IF (@Dashboard_Count_Restore_info >=1 AND @show_Restore_info=1)
+			BEGIN
+				DECLARE @Html_Title_Restore_info VARCHAR(MAX)='',@Html_Restore_info VARCHAR(MAX)=''
+				DECLARE @SQLText_Restore_info AS VARCHAR(MAX)=  'select * from #t_dba_Restore_info'
+				EXECUTE  dbo.p_DBA_ConvertTableToHtml @SQLText_Restore_info,@Html_Restore_info OUTPUT   
+				SET @Html_Title_Restore_info = '<html><p><u><strong><span style="background-color:#eeeeee;">' + @caption_Restore_info + '</span></strong></u></p></body></html>'
+				SET @HtmlMin = @HtmlMin + @HtmlFillerTable + @Html_Title_Restore_info + @Html_Restore_info 
+			END
+		ELSE IF (@show_Restore_info=0)
+			BEGIN
+				SET @HtmlMin = @HtmlMin --+ @HtmlFillerTable
+			END
+		ELSE
+			BEGIN
+				SET @Html_Title_Restore_info = '<html><p><u><strong><span style="background-color:#eeeeee;">' + @caption_Restore_info + '</span></strong></u></p></body></html>'
+				SET @HtmlMin = @HtmlMin + @HtmlFillerTable + @Html_Title_Restore_info + @HtmlFillerTable
+			END	
+----------------------------------------------------------------------------------------
+		IF @show_top_memory_clerk_info	=1
+			BEGIN
+							
+			if OBJECT_ID(N'tempdb..#t_dba_top_memory_clerk_info') is not null drop table #t_dba_top_memory_clerk_info
+			
+		    Declare @Dashboard_Count_top_memory_clerk_info int= 0
+		    Declare @caption_top_memory_clerk_info varchar(1000)  ='Data for top_memory_clerk_info'
+			create table #t_dba_top_memory_clerk_info
+			(SrNo INT,
+			 [Type] [nvarchar](60), 
+			 Name [varchar](100), 
+			 Memory_Utilized_in_MB [bigint],
+			 Memory_Allocated_throug_Windows_API [bigint])
+			INSERT INTO #t_dba_top_memory_clerk_info
+			EXEC p_dba_Show_Top_memory_clerks_usage
+			SELECT @Dashboard_Count_top_memory_clerk_info = @@ROWCOUNT
+			SELECT * FROM #t_dba_top_memory_clerk_info
+			
+		END
+			
+	IF (@Dashboard_Count_top_memory_clerk_info >=1 AND @show_top_memory_clerk_info=1)
+			BEGIN
+				DECLARE @Html_Title_top_memory_clerk_info VARCHAR(MAX)='',@Html_top_memory_clerk_info VARCHAR(MAX)=''
+				DECLARE @SQLText_top_memory_clerk_info AS VARCHAR(MAX)=  'select * from #t_dba_top_memory_clerk_info'
+				EXECUTE  dbo.p_DBA_ConvertTableToHtml @SQLText_top_memory_clerk_info,@Html_top_memory_clerk_info OUTPUT   
+				SET @Html_Title_top_memory_clerk_info = '<html><p><u><strong><span style="background-color:#eeeeee;">' + @caption_top_memory_clerk_info + '</span></strong></u></p></body></html>'
+				SET @HtmlMin = @HtmlMin + @HtmlFillerTable + @Html_Title_top_memory_clerk_info + @Html_top_memory_clerk_info 
+			END
+		ELSE IF (@show_top_memory_clerk_info=0)
+			BEGIN
+				SET @HtmlMin = @HtmlMin --+ @HtmlFillerTable
+			END
+		ELSE
+			BEGIN
+				SET @Html_Title_top_memory_clerk_info = '<html><p><u><strong><span style="background-color:#eeeeee;">' + @caption_top_memory_clerk_info + '</span></strong></u></p></body></html>'
+				SET @HtmlMin = @HtmlMin + @HtmlFillerTable + @Html_Title_top_memory_clerk_info + @HtmlFillerTable
+			END	
+-------------------------------------------------------------------------
+	IF @show_Recent_DBCC_Checkdb = 1 
+			BEGIN
+							
+			if OBJECT_ID(N'tempdb..#t_dba_Recent_DBCC_Checkdb') is not null drop table #t_dba_Recent_DBCC_Checkdb
+			
+		    Declare @Dashboard_Count_Recent_DBCC_Checkdb int= 0
+		    Declare @caption_Recent_DBCC_Checkdb varchar(1000)  ='Data for Recent_DBCC_Checkdb'
+			create table #t_dba_Recent_DBCC_Checkdb
+			(Database_name varchar(100),Last_DBCC_CheckDB_RunDate VARCHAR(100),Days_Since_Last_DBCC_CheckDB VARCHAR(200))
+
+			EXEC p_dba_show_Recent_DBCC_Checkdb
+
+			INSERT INTO #t_dba_Recent_DBCC_Checkdb
+			SELECT * FROM ##Valuefinal_html --GLOBAL TEMP TABLE IS USED
+			SELECT @Dashboard_Count_Recent_DBCC_Checkdb = @@ROWCOUNT
+			SELECT * FROM #t_dba_Recent_DBCC_Checkdb
+			
+		END
+			
+	IF (@Dashboard_Count_Recent_DBCC_Checkdb >=1 AND @show_Recent_DBCC_Checkdb=1)
+			BEGIN
+				DECLARE @Html_Title_Recent_DBCC_Checkdb VARCHAR(MAX)='',@Html_Recent_DBCC_Checkdb VARCHAR(MAX)=''
+				DECLARE @SQLText_Recent_DBCC_Checkdb AS VARCHAR(MAX)=  'select * from #t_dba_Recent_DBCC_Checkdb'
+				EXECUTE  dbo.p_DBA_ConvertTableToHtml @SQLText_Recent_DBCC_Checkdb,@Html_Recent_DBCC_Checkdb OUTPUT   
+				SET @Html_Title_Recent_DBCC_Checkdb = '<html><p><u><strong><span style="background-color:#eeeeee;">' + @caption_Recent_DBCC_Checkdb + '</span></strong></u></p></body></html>'
+				SET @HtmlMin = @HtmlMin + @HtmlFillerTable + @Html_Title_Recent_DBCC_Checkdb + @Html_Recent_DBCC_Checkdb 
+			END
+		ELSE IF (@show_Recent_DBCC_Checkdb=0)
+			BEGIN
+				SET @HtmlMin = @HtmlMin --+ @HtmlFillerTable
+			END
+		ELSE
+			BEGIN
+				SET @Html_Title_Recent_DBCC_Checkdb = '<html><p><u><strong><span style="background-color:#eeeeee;">' + @caption_Recent_DBCC_Checkdb + '</span></strong></u></p></body></html>'
+				SET @HtmlMin = @HtmlMin + @HtmlFillerTable + @Html_Title_Recent_DBCC_Checkdb + @HtmlFillerTable
+			END
+-------------------------------------------------------------------------------------------------------------------------------
+
+IF @show_Replication_info	=1
+			BEGIN
+							
+			if OBJECT_ID(N'tempdb..#t_dba_Replication_info') is not null drop table #t_dba_Replication_info
+			
+		    Declare @Dashboard_Count_Replication_info int= 0
+		    Declare @caption_Replication_info varchar(1000)  ='Data for Replication_info'
+			create table #t_dba_Replication_info
+			(ROW_NO VARCHAR(100),REC_CREATE_DATE VARCHAR(100),REC_RECEIVE_DATE VARCHAR(100), LATENCY VARCHAR(100))
+			INSERT INTO #t_dba_Replication_info
+			EXEC p_dba_show_replication_latency
+			SELECT @Dashboard_Count_Replication_info = @@ROWCOUNT
+			SELECT * FROM #t_dba_Replication_info
+			
+		END
+			
+	IF (@Dashboard_Count_Replication_info >=1 AND @show_Replication_info=1)
+			BEGIN
+				DECLARE @Html_Title_Replication_info VARCHAR(MAX)='',@Html_Replication_info VARCHAR(MAX)=''
+				DECLARE @SQLText_Replication_info AS VARCHAR(MAX)=  'select * from #t_dba_Replication_info'
+				EXECUTE  dbo.p_DBA_ConvertTableToHtml @SQLText_Replication_info,@Html_Replication_info OUTPUT   
+				SET @Html_Title_Replication_info = '<html><p><u><strong><span style="background-color:#eeeeee;">' + @caption_Replication_info + '</span></strong></u></p></body></html>'
+				SET @HtmlMin = @HtmlMin + @HtmlFillerTable + @Html_Title_Replication_info + @Html_Replication_info 
+			END
+		ELSE IF (@show_Replication_info=0)
+			BEGIN
+				SET @HtmlMin = @HtmlMin --+ @HtmlFillerTable
+			END
+		ELSE
+			BEGIN
+				SET @Html_Title_Replication_info = '<html><p><u><strong><span style="background-color:#eeeeee;">' + @caption_Replication_info + '</span></strong></u></p></body></html>'
+				SET @HtmlMin = @HtmlMin + @HtmlFillerTable + @Html_Title_Replication_info + @HtmlFillerTable
+			END
+			
+Declare @p_recipients AS VARCHAR(5000)		
+SELECT @p_recipients= info_value
+FROM [tb_info] 
+WHERE [Info_Key]=@ToEmail
+
+Select @ToEmail, @p_recipients
+
+/*******************************************BUSINESS LOGIC ENDS***********************************************/
+
+/******************************************SEND MAIL LOGIC STARTS*********************************************/
+
+IF (@sendMail =0 AND @ToEmail <>'')
+	BEGIN
+		RAISERROR('If we need to send email , we must keep the value of the parameter @sendemail as 1...', 16, 1)WITH NOWAIT;
+		RETURN
+	END
+
+
+IF (@sendMail =1 ) 
+
+BEGIN
+
+IF (@sendMail =1 AND @ToEmail ='')
+	BEGIN
+		RAISERROR('If the value of the parameter @sendemail is 1, we need to specify email address in the @ToEmail parameter 
+					else keep the @sendemail=0 and ToEmail=NULL or blank..', 16, 1)WITH NOWAIT;
+	RETURN
+	END
+				DECLARE @Profile_Name sysname
+				DECLARE  @HtmlMail AS VARCHAR(MAX)
+				DECLARE @p_subject AS VARCHAR(500)
+				Declare @P_SERVERNAME VARCHAR(500)
+				SELECT @P_SERVERNAME = INFO_VALUE FROM tb_info WHERE INFO_KEY = 'SERVERNAME'
+				
+				SET @HtmlMin = REPLACE(@HtmlMin,'&lt;','<')
+				SET @HtmlMin = REPLACE(@HtmlMin,'&gt;','>')
+
+				SET @HtmlMail = @HtmlMin
+				SET @p_subject = @P_SERVERNAME +' (Report)'+ ' -- Review on DBA processes  ' +  '('+ 'DBA Mail -'+' ' + CONVERT(VARCHAR, getdate(), 9) + ')'
+				
+
+
+				SELECT @Profile_Name= info_value
+				FROM [tb_info] 
+				WHERE [Info_Key]= 'Current-DBA-Profile-Name'
+				
+				set @p_recipients = ISNULL(@p_recipients, @ToEmail)
+
+				EXEC msdb.dbo.SP_SEND_DBMAIL
+					   @Profile_name=@Profile_Name
+					  ,@recipients	= @p_recipients 
+					  ,@subject		= @p_subject
+					  ,@body		= @HtmlMail
+					  ,@body_format = 'html'	
+			
+	END
+
+----/*******************************************SEND MAIL LOGIC ENDS***********************************************/
+--END TRY
+------/*******************************************BEGIN CATCH********************************************************/
+--BEGIN CATCH
+--	EXEC p_dba_Call_SqlErrorlog @ObjectID = @@PROCID;
+--END CATCH
+GO
+
