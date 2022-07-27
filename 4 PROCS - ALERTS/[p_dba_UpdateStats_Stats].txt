@@ -1,0 +1,64 @@
+USE [ADMIN]
+GO
+
+/****** Object:  StoredProcedure [dbo].[p_dba_UpdateStats_Stats]    Script Date: 12/1/2021 10:13:25 AM ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+CREATE PROCEDURE [dbo].[p_dba_UpdateStats_Stats]
+AS
+/*
+Update Statistics in All User Databases
+*/
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED
+declare @cmd nvarchar(max)
+SET @cmd = ''
+
+-- Build command to update statistics
+SELECT @cmd = @cmd+
+'
+use '+quotename(a.name)+'
+
+print 	''***	Start Update Statistics for database ''+quotename(db_name())+
+	'' at ''+convert(varchar(30),getdate(),121)
+
+exec sp_updatestats
+
+print 	''***	End   Update Statistics for database ''+quotename(db_name())+
+	'' at ''+convert(varchar(30),getdate(),121)
+
+'
+FROM
+	(
+	SELECT TOP 100 PERCENT
+		aa.name
+	FROM
+		sys.sysdatabases aa
+	WHERE
+		-- Exclude system database.  MSDB Database has been included considering its kind of a user database. Please add it if required. 
+		-- Add more database names to exclude as needed. 
+		--name not in  ('master','model','tempdb')	and
+		name  in  ('admin','distribution','Reporting_FV_Prepaid_CA','Reporting_FV_Prepaid_CI','Reporting_FV_Prepaid_PW','FV_Prepaid_TPG','Reporting_FV_Prepaid_TPG')	and
+		-- Include only databases that are online
+		databasepropertyex(aa.name,'Status') = 'ONLINE'	and
+		-- Include only databases that are updatable
+		databasepropertyex(aa.name,'Updateability') = 'READ_WRITE'	and
+		-- Exclude databases in single user mode
+		databasepropertyex(aa.name,'UserAccess ') in ('RESTRICTED_USER','MULTI_USER')
+	order by
+		aa.name
+	) a
+
+print '***	Start Update Statistics at '+convert(varchar(30),getdate(),121)
+exec ( @cmd )	-- Execute Update Statistics commands
+print '***	End   Update Statistics at '+convert(varchar(30),getdate(),121)
+
+
+
+
+GO
+
