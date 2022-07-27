@@ -1,0 +1,23 @@
+USE [ADMIN]
+GO
+
+/****** Object:  Table [dbo].[t_dba_sysjobs_enabled_log]    Script Date: 11/30/2021 6:03:37 AM ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+CREATE TABLE [dbo].[t_dba_sysjobs_enabled_log](
+	[Server name] [sysname] NOT NULL,
+	[User Name] [varchar](100) NULL,
+	[Job Name] [varchar](100) NULL,
+	[New Job Status] [varchar](20) NULL,
+	[Host Name] [varchar](100) NULL,
+	[Rec_Created_Date] [datetime] NULL
+) ON [PRIMARY]
+GO
+
+ALTER TABLE [dbo].[t_dba_sysjobs_enabled_log] ADD  DEFAULT (getdate()) FOR [Rec_Created_Date]
+GO
+
