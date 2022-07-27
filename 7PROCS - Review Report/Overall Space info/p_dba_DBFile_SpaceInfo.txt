@@ -1,0 +1,494 @@
+USE [Admin]
+GO
+
+/****** Object:  StoredProcedure [dbo].[p_dba_DBFile_SpaceInfo]    Script Date: 11/30/2021 7:10:30 AM ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+CREATE PROC [dbo].[p_dba_DBFile_SpaceInfo]
+(
+	@thresholdFreeSpace numeric(4,2) =10.00,
+	@SendMail BIT=0,
+	@ToEmail varchar(500)=''
+)
+AS
+BEGIN TRY
+--[p_dba_DBFile_SpaceInfo] @SendMail=1,@ToEmail='dba_test'
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED
+	SET NOCOUNT ON 
+DECLARE @P_SERVERNAME VARCHAR(500)
+SELECT @P_SERVERNAME = INFO_VALUE FROM TB_INFO WHERE INFO_KEY = 'SERVERNAME'
+	CREATE TABLE #DBInfo
+	( 
+	DatabaseName VARCHAR(100), 
+	FileSizeMB NUMERIC(10,2), 
+	LogicalFileName sysname, 
+	PhysicalFileName NVARCHAR(520), 
+	[Status] sysname, 
+	Updateability sysname, 
+	RecoveryMode sysname, 
+	FileFreeSpaceMB NUMERIC(10,2), 
+	FileFreeSpacePct NUMERIC(10,2), 
+	FreeSpacePages INT,
+	[type] tinyint
+	) 
+
+	CREATE TABLE #tempDBName
+	( 
+	Sl_No INT Identity(1,1) NOT NULL,
+	DatabaseName VARCHAR(100)
+	)
+
+	DECLARE @command VARCHAR(MAX) = ''
+	DECLARE @DatabaseName VARCHAR(500),@Profile_Name sysname
+
+
+	INSERT	INTO #tempDBName
+	SELECT [name] FROM master.sys.databases WHERE state_desc = 'ONLINE' AND is_in_standby = 0
+	
+	DECLARE @DBCount INT = (SELECT MAX(Sl_No) FROM #tempDBName)
+	DECLARE @VarCounter INT = 1
+	
+	WHILE (@VarCounter <= @DBCount)
+	BEGIN
+	
+		SET @DatabaseName = (SELECT DatabaseName FROM #tempDBName where Sl_No = @VarCounter)
+		
+		SELECT @command = '
+		
+		Use [' + @DatabaseName + '] 
+		
+		INSERT INTO #DBInfo 
+	   (DatabaseName, FileSizeMB, LogicalFileName, PhysicalFileName, Status, Updateability, RecoveryMode, 
+	    FileFreeSpaceMB, FileFreeSpacePct, type)		
+		SELECT 
+		' + '''' + @DatabaseName + '''' + ' AS [DatabaseName], 
+		--CAST(sys.database_files.size/128.0 AS int) AS [FileSizeMB], 
+		CAST(sys.database_files.size/128.00 AS NUMERIC(10,2)) AS [FileSizeMB], 
+		sys.database_files.name AS [LogicalFileName],
+		sys.database_files.physical_name AS [PhysicalFileName], 
+		CONVERT(sysname,DatabasePropertyEx('''+ @DatabaseName +''',''Status'')) AS [Status], 
+		CONVERT(sysname,DatabasePropertyEx('''+ @DatabaseName +''',''Updateability'')) AS [Updateability], 
+		CONVERT(sysname,DatabasePropertyEx('''+ @DatabaseName +''',''Recovery'')) AS [RecoveryMode], 
+		--CAST(sys.database_files.size/128.0 - CAST(FILEPROPERTY(sys.database_files.name, ' + '''' + 		   'SpaceUsed' + '''' + ' ) AS int)/128.0 AS int) AS [FileFreeSpaceMB], 
+		CAST(sys.database_files.size/128.00 - FILEPROPERTY(sys.database_files.name, ' + '''' + 
+			   'SpaceUsed' + '''' + ' )/128.00 AS NUMERIC(10,2)) AS [FileFreeSpaceMB], 
+		--CAST(100 * (CAST (((sys.database_files.size/128.0 -CAST(FILEPROPERTY(sys.database_files.name, 
+		--	' + '''' + 'SpaceUsed' + '''' + ' ) AS int)/128.0)/(sys.database_files.size/128.0)) 
+		--	AS decimal(4,2))) AS INT) + ' + '''' + '''' + ' AS [FileFreeSpacePct]
+		CAST (100 * (sys.database_files.size/128.00 -FILEPROPERTY(sys.database_files.name, 
+			''SpaceUsed'' )/128.00)
+		/(sys.database_files.size/128.00) AS NUMERIC(10,2)) AS [FileFreeSpacePct]
+		,type
+		FROM sys.database_files
+		WHERE EXISTS(SELECT [name] FROM SYS.DATABASES WHERE source_database_id IS NULL AND [name]=DB_NAME());
+		'
+		--print  @command
+		EXEC (@command)
+
+		SET @VarCounter = @VarCounter + 1
+		
+	END              
+	
+	--PRINT 'First Result'
+	--SELECT * FROM #DBInfo
+
+	DELETE FROM #DBInfo	 WHERE DatabaseName in 
+	  (
+	  SELECT A.DatabaseName FROM #DBInfo A
+	  GROUP BY A.DatabaseName
+	  HAVING SUM(A.[FileSizeMB]) < 10
+	  )
+	
+	--PRINT 'Second Result'
+	--SELECT * FROM #DBInfo
+
+	--SELECT * INTO #tempDriveSpace_Interim FROM OPENROWSET('SQLNCLI', 'Server=localhost;Trusted_Connection=yes;',
+	--'EXEC Admin.dbo.p_dba_drive_space_info')
+	
+
+SELECT  distinct volume_mount_point as drive, total_bytes/1024/1024/1024 TotalSpaceGB, available_bytes/1024/1024/1024 FreeSpaceGB
+,(available_bytes/1024/1024/1024)*100/(total_bytes/1024/1024/1024) FreeSpacePercent
+into #tempDriveSpace_Interim  
+FROM sys.master_files AS f
+CROSS APPLY sys.dm_os_volume_stats(f.database_id, f.file_id)
+--order by drive asc
+
+
+--drop table #tempDriveSpace_Interim1 
+--drop table #tempDriveSpace_Interim 
+
+	--INSERTING ALL THE DATABASE FILE SPACE INFORMATION IN A TEMP TABLE FOR SENDING MAIL
+	SELECT 
+	   DatabaseName
+	   ,LogicalFileName
+	   , FileSizeMB
+	   , FileFreeSpaceMB
+	   , FileFreeSpacePct
+	   , LEFT(PhysicalFileName,1) Drive
+	   ,convert(int, B.TotalSpaceGB) AS DriveTotalSpaceGB
+	   ,convert(int, B.FreeSpaceGB) AS DriveAvailableSpaceGB
+	   ,convert(NUMERIC(10,2), B.FreeSpacePercent) AS DriveAvailableSpacePct
+	   ,[type]--CHANGE NEW
+	INTO #temp_DBFileSpaceInfo_Interim
+	FROM #DBInfo  A
+	LEFT JOIN #tempDriveSpace_Interim  B on  LEFT(A.PhysicalFileName,1) = LEFT(B.Drive,1)
+		
+	--select * from #temp_DBFileSpaceInfo_Interim
+	
+	-- INSERTING RECORDS INTO MAIN TABLE
+		
+DECLARE @Max_Execution_Count int
+SELECT top 1 @Max_Execution_Count= (ISNULL(Execution_Count,0)  + 1) FROM t_dba_DBFile_SpaceInfo
+order by RecCreateDate desc
+
+	
+	INSERT INTO dbo.t_dba_DBFile_SpaceInfo (
+		[DatabaseName]
+		,[LogicalFileName]
+		,[FileSize(MB)]
+		,[FileFreeSpace(MB)]
+		,[FileFreeSpacePct]
+		,[Drive]
+		,[DriveTotalSpace(GB)]
+		,[DriveAvailableSpace(GB)]
+		,[DriveAvailableSpacePct]
+		,[type]
+		,[Execution_Count]
+		
+		)--CHANGE NEW
+	SELECT 
+		 [DatabaseName]
+		,[LogicalFileName]
+		,[FileSizeMB]
+		,[FileFreeSpaceMB]
+		,[FileFreeSpacePct]
+		,[Drive]
+		,[DriveTotalSpaceGB]
+		,[DriveAvailableSpaceGB]
+		,[DriveAvailableSpacePct]
+		,[type]
+		,@Max_Execution_Count AS [Execution_Count] FROM #temp_DBFileSpaceInfo_Interim	--TABLE WITH CURRENT RUN DATA FOR EMAIL
+	
+
+	-- CREATING 1ST TABLE: FOR DRIVE SPACE
+	SELECT CAST(UPPER([Drive]) AS VARCHAR(500)) [Drive]
+		  ,CAST([TotalSpaceGB] AS VARCHAR(500)) [TotalSpaceGB]
+		  ,CAST([FreeSpaceGB] AS VARCHAR(500)) [FreeSpaceGB]
+		  ,CAST([FreeSpacePercent] AS VARCHAR(500)) [FreeSpacePercent]
+	INTO #tempDriveSpace
+	FROM #tempDriveSpace_Interim
+	ORDER BY
+		CAST([FreeSpacePercent] AS INT)
+		,CAST([TotalSpaceGB] AS INT) DESC
+
+	--UPDATING FINAL TABLE FOR HIGHLIGHTING
+	UPDATE #tempDriveSpace SET
+		[Drive] = '<B><Font color=red>' + [Drive] + '</B></Font>'
+		,[TotalSpaceGB] = '<B><Font color=red>' + [TotalSpaceGB] + '</B></Font>'
+		,[FreeSpaceGB] = '<B><Font color=red>' + [FreeSpaceGB] + '</B></Font>'
+		,[FreeSpacePercent] = '<B><Font color=red>' + [FreeSpacePercent] + '</B></Font>'
+	WHERE [FreeSpacePercent] < @thresholdFreeSpace
+	--select * from #tempDriveSpace
+
+	DECLARE @SQLText1 AS VARCHAR(5000)=  'SELECT * FROM #tempDriveSpace'
+	DECLARE @Html1 AS VARCHAR(MAX)
+
+	EXECUTE p_DBA_ConvertTableToHtml @SQLText1,@Html1 OUTPUT
+
+	SET @Html1 = REPLACE(@Html1,'&lt;','<')
+	SET @Html1 = REPLACE(@Html1,'&gt;','>')
+
+	
+	-- CREATING 2ND TABLE: DATABASE LEVEL INFORMATION
+	SELECT
+		A.DatabaseName AS DatabaseName
+		,SUM(A.[FileSizeMB])  AS DatabaseSize_MB
+		--,CONVERT(NUMERIC(10,2),SUM(CONVERT(NUMERIC(10,2),A.[FileFreeSpaceMB]))
+		--	/SUM(A.[FileSizeMB])*100) AS Database_FreeSpace_Percent
+		,DFP.Database_DataFile_FreeSpace_Percent AS Database_DataFile_FreeSpace_Percent
+		,LFP.Database_LogFile_FreeSpace_Percent AS Database_LogFile_FreeSpace_Percent
+	INTO #temp_DatabaseLevelInfo_Interim
+	FROM #temp_DBFileSpaceInfo_Interim A
+	LEFT OUTER JOIN
+		(
+		SELECT A.DatabaseName
+			,CONVERT(NUMERIC(10,2),SUM(CONVERT(NUMERIC(10,2),A.[FileFreeSpaceMB]))
+				/SUM(A.[FileSizeMB])*100) AS Database_DataFile_FreeSpace_Percent
+		FROM #temp_DBFileSpaceInfo_Interim A
+		WHERE A.[type]=0-- and A.[FileSizeMB] <> 0
+		GROUP BY A.DatabaseName
+		) DFP
+	ON
+	A.DatabaseName=DFP.DatabaseName
+	LEFT OUTER JOIN
+		(
+		SELECT A.DatabaseName
+			,CONVERT(NUMERIC(10,2),SUM(CONVERT(NUMERIC(10,2),A.[FileFreeSpaceMB]))
+				/SUM(CASE A.[FileSizeMB] WHEN 0 THEN 1 ELSE A.[FileSizeMB] END)*100) 
+				AS Database_LogFile_FreeSpace_Percent
+		FROM #temp_DBFileSpaceInfo_Interim A
+		WHERE A.[type]=1
+		GROUP BY A.DatabaseName
+		
+		) LFP
+	ON
+	A.DatabaseName=LFP.DatabaseName
+	GROUP BY 
+	A.DatabaseName
+		,DFP.Database_DataFile_FreeSpace_Percent
+		,LFP.Database_LogFile_FreeSpace_Percent
+	
+
+	SELECT CAST([DatabaseName] AS VARCHAR(500)) [DatabaseName]
+		  ,CAST([DatabaseSize_MB] AS VARCHAR(500)) [DatabaseSize_MB]
+		  --,CAST([Database_FreeSpace_Percent] AS VARCHAR(500)) [Database_FreeSpace_Percent]
+		  ,CAST([Database_DataFile_FreeSpace_Percent] AS VARCHAR(500)) [Database_DataFile_FreeSpace_Percent]
+		  ,CAST([Database_LogFile_FreeSpace_Percent] AS VARCHAR(500)) [Database_LogFile_FreeSpace_Percent]
+	INTO #temp_DatabaseLevelInfo
+	FROM #temp_DatabaseLevelInfo_Interim
+	ORDER BY
+		--CAST([Database_FreeSpace_Percent] AS INT)
+		--,CAST([DatabaseSize_MB] AS INT) DESC
+		CAST([Database_DataFile_FreeSpace_Percent] AS NUMERIC(10,2))
+		,CAST([DatabaseSize_MB] AS INT) DESC
+
+	--UPDATING FINAL TABLE FOR HIGHLIGHTING
+	UPDATE #temp_DatabaseLevelInfo SET
+		[DatabaseName] = '<B><Font color=red>' + [DatabaseName] + '</B></Font>'
+		,[DatabaseSize_MB] = '<B><Font color=red>' + [DatabaseSize_MB] + '</B></Font>'
+		--,[Database_FreeSpace_Percent] = '<B><Font color=red>' + [Database_FreeSpace_Percent] + '</B></Font>'
+		,[Database_DataFile_FreeSpace_Percent] = '<B><Font color=red>' + [Database_DataFile_FreeSpace_Percent] + '</B></Font>'
+		,[Database_LogFile_FreeSpace_Percent] = '<B><Font color=red>' + [Database_LogFile_FreeSpace_Percent] + '</B></Font>'
+	--WHERE cast([Database_FreeSpace_Percent] as numeric(10,2)) < @thresholdFreeSpace
+	WHERE cast([Database_DataFile_FreeSpace_Percent] as numeric(10,2)) < @thresholdFreeSpace
+
+
+	DECLARE @SQLText2 AS VARCHAR(5000)=  'SELECT * FROM #temp_DatabaseLevelInfo'
+	DECLARE @Html2 AS VARCHAR(MAX)
+
+	EXECUTE p_DBA_ConvertTableToHtml @SQLText2,@Html2 OUTPUT
+
+	SET @Html2 = REPLACE(@Html2,'&lt;','<')
+	SET @Html2 = REPLACE(@Html2,'&gt;','>')
+
+	--print 'PRINT @Html2 >>>> ' + @Html2
+	
+	
+	--CREATING 3RD TABLE: FOR FILE LEVEL SPACE INFORMATION
+	DECLARE @Html3 AS VARCHAR(MAX)
+	DECLARE @p_recipients AS VARCHAR(5000)
+	DECLARE @SQLText3 AS VARCHAR(5000)=  'SELECT * FROM #temp_DBFileSpaceInfo'
+
+/*********************************************
+ CHANGES FOR THE ADDING GROUP IN REPORT
+
+ *********************************************/
+	
+	IF OBJECT_ID ('tempdb..#File_Group_Temp') IS NOT NULL
+	DROP TABLE #File_Group_Temp
+
+	CREATE TABLE #File_Group_Temp
+	(DBName VARCHAR (100),
+	[FILE_NAME] VARCHAR(100),
+	FILE_GROUP_NAME VARCHAR(100)
+	)
+
+	DECLARE @FILECOMMAND VARCHAR(1000) 
+
+	--SELECT @FILECOMMAND = 
+	--			'USE [?] 
+	--			INSERT INTO #File_Group_Temp
+	--			SELECT SDF.NAME AS [FILENAME],
+	--			SDF
+	--			SPS.NAME AS [FILE_GROUP_NAME]
+	--			FROM SYS.DATABASE_FILES SDF
+	--			LEFT OUTER JOIN
+	--			SYS.DATA_SPACES SPS
+	--			ON SDF.DATA_SPACE_ID=SPS.DATA_SPACE_ID' 
+	
+	SELECT @FILECOMMAND = 'USE [?] 
+				INSERT INTO #File_Group_Temp
+				SELECT DB_NAME(smf.database_id)as databasename, smf.name as filename, sds.name as [filegroup] from sys.master_files smf
+				inner join sys.database_files sdf
+				on smf.file_id= sdf.file_id
+				left outer join sys.data_spaces sds on sdf.data_space_id = sds.data_space_id
+				WHERE db_name(smf.database_id) = ''?'''
+				 
+	EXEC SP_MSFOREACHDB @FILECOMMAND
+
+	--SELECT * FROM #File_Group_Temp
+	
+
+	;WITH [FileGroupTemp2] AS(
+	 SELECT DBName, [FILE_NAME], FILE_GROUP_NAME, 
+     RN = ROW_NUMBER()OVER(PARTITION BY DBName, [FILE_NAME] ORDER BY DBName)
+	 FROM #File_Group_Temp
+			)
+	DELETE FROM [FileGroupTemp2] WHERE RN > 1
+
+
+	--SELECT * FROM #File_Group_Temp	
+
+
+	SELECT CAST([DatabaseName] AS VARCHAR(500)) [DatabaseName]
+	  ,CAST([LogicalFileName] AS VARCHAR(500)) [LogicalFileName]
+	  ,CAST(CASE WHEN fgt.[FILE_GROUP_NAME] IS NULL THEN 'NA' ELSE fgt.[FILE_GROUP_NAME] END  AS VARCHAR(500)) [FileGroup]
+	  ,CAST([FileSizeMB] AS VARCHAR(500)) [FileSizeMB]
+	  ,CAST([FileFreeSpaceMB] AS VARCHAR(500)) [FileFreeSpaceMB]
+	  ,CAST([FileFreeSpacePct] AS VARCHAR(500)) [FileFreeSpacePct]
+	  ,CAST([Drive] AS VARCHAR(500)) [Drive]
+	  ,CAST([DriveTotalSpaceGB] AS VARCHAR(500)) [DriveTotalSpaceGB]
+	  ,CAST([DriveAvailableSpaceGB] AS VARCHAR(500)) [DriveAvailableSpaceGB]
+	  ,CAST([DriveAvailableSpacePct] AS VARCHAR(500)) [DriveAvailableSpacePct]
+	INTO #temp_DBFileSpaceInfo
+	FROM #temp_DBFileSpaceInfo_Interim tmp join #File_Group_Temp fgt on tmp.LogicalFileName=fgt.[FILE_NAME]
+	WHERE tmp.DatabaseName = fgt.DBName	 
+	ORDER BY
+		CAST([FileFreeSpacePct] AS NUMERIC(10,2))
+		,CAST([FileFreeSpaceMB] AS INT) DESC
+
+--	SELECT * FROM #temp_DBFileSpaceInfo
+--	SELECT * FROM #temp_DBFileSpaceInfo_Interim
+
+
+	--UPDATING FINAL TABLE FOR HIGHLIGHTING
+	UPDATE #temp_DBFileSpaceInfo SET
+		[DatabaseName] = '<B><Font color=red>' + [DatabaseName] + '</B></Font>'
+		,[LogicalFileName] = '<B><Font color=red>' + [LogicalFileName] + '</B></Font>'
+		,[FileGroup] = '<B><Font color=red>' + [FileGroup] + '</B></Font>'
+		,[FileSizeMB] = '<B><Font color=red>' + [FileSizeMB] + '</B></Font>'
+		,[FileFreeSpaceMB] = '<B><Font color=red>' + [FileFreeSpaceMB] + '</B></Font>'
+		,[FileFreeSpacePct] = '<B><Font color=red>' + [FileFreeSpacePct] + '</B></Font>'
+		,[Drive] = '<B><Font color=red>' + [Drive] + '</B></Font>'
+		,[DriveTotalSpaceGB] = '<B><Font color=red>' + [DriveTotalSpaceGB] + '</B></Font>'
+		,[DriveAvailableSpaceGB] = '<B><Font color=red>' + [DriveAvailableSpaceGB] + '</B></Font>'
+		,[DriveAvailableSpacePct] = '<B><Font color=red>' + [DriveAvailableSpacePct] + '</B></Font>'
+	WHERE cast([FileFreeSpacePct] as numeric(10,2)) < @thresholdFreeSpace
+
+	--select * from #temp_DBFileSpaceInfo
+
+	EXECUTE p_DBA_ConvertTableToHtml @SQLText3,@Html3 OUTPUT
+
+	SET @Html3 = REPLACE(@Html3,'&lt;','<')
+	SET @Html3 = REPLACE(@Html3,'&gt;','>')
+
+	--print 'PRINT @Html3 >>>> ' + @Html3
+	
+	--SHOW TOP LARGEST TABLES IN DATABASES
+	DECLARE @Html4 AS VARCHAR(MAX)
+	EXEC p_dba_show_Large_tables_all_DBs
+	@Databasename = '',
+	@MinSizeMB = 5000,
+	@Sendmail = 0,
+	@ToEmail = ''
+	DECLARE @MinSizeMB INT  = 5000 --THIS VARIABLE SHOULD HAVE THE SAME VALUE AS INPUT PARAMETER @MinSizeMB IN PROC p_dba_show_Large_tables_all_DBs
+		--SELECT * FROM ##Large_Tables_final
+	DECLARE @SQLText4 AS VARCHAR(5000)=  'SELECT * FROM ##Large_Tables_final'
+	EXECUTE p_DBA_ConvertTableToHtml @SQLText4,@Html4 OUTPUT
+
+	/*Code changed on 26/10/2018 to add log table for lareg tables*/
+	IF  NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[t_dba_Log_DBFileSpaceInfo_LargeTables]') AND type in (N'U'))
+
+	BEGIN
+	CREATE TABLE [dbo].[t_dba_Log_DBFileSpaceInfo_LargeTables]
+	(
+		[Database_Name] [varchar](500) NULL,
+		[TableName] [varchar](500) NULL,
+		[Total_SpaceMB] [varchar](max) NULL,
+		[RowCounts] [varchar](100) NULL,
+		[RecordDate] datetime DEFAULT CURRENT_TIMESTAMP
+
+	) 
+	END
+	
+	INSERT INTO [t_dba_Log_DBFileSpaceInfo_LargeTables]([Database_Name],[TableName],[Total_SpaceMB],[RowCounts])
+	SELECT [Database_Name],[TableName],REPLACE(REPLACE(Total_SpaceMB,'<b><font color = Red>',''),'</b></font>',''),[RowCounts]
+	FROM ##Large_Tables_final
+	/*Code changed on 26/10/2018 to add log table for lareg tables*/
+
+
+	SET @Html4 = REPLACE(@Html4,'&lt;','<')
+	SET @Html4 = REPLACE(@Html4,'&gt;','>')
+
+	--CREATING HTML FILLER TABLE
+	DECLARE @HtmlFillerTable VARCHAR(MAX) = '<HTML><BR><BR><BR><BR></HTML>'
+	
+	--Shows result in the Query window
+	SELECT * FROM #tempDriveSpace
+	SELECT * FROM #temp_DatabaseLevelInfo
+	SELECT * FROM #temp_DBFileSpaceInfo
+	SELECT * FROM ##Large_Tables_final
+	
+	DECLARE @Html VARCHAR(MAX)	
+	DECLARE @Html1_Title AS VARCHAR(MAX) = '<html><p><u><strong><span style="background-color:#eeeeee;">Drive Level Space Information</span></strong></u></p></body></html>'
+	DECLARE @Html2_Title AS VARCHAR(MAX) = '<html><p><u><strong><span style="background-color:#eeeeee;">Database Level Space Information</span></strong></u></p></body></html>'
+	DECLARE @Html3_Title AS VARCHAR(MAX) = '<html><p><u><strong><span style="background-color:#eeeeee;">Database File Level Space Information</span></strong></u></p></body></html>'
+	DECLARE @Html4_Title AS VARCHAR(MAX) = '<html><p><u><strong><span style="background-color:#eeeeee;">Showing status of Top Largest Tables in Databases (Larger than ' + CONVERT(VARCHAR(100),@MinSizeMB) + 'MB)</span></strong></u></p></body></html>'
+	DECLARE @Html5_Title AS VARCHAR(MAX) = '<html><p><i><strong><span style="background-color:#eeeeee;">There no table larger than the size ' + CONVERT(VARCHAR(100),@MinSizeMB) + 'MB as specified in the selection criteria.</span></strong></i></p></body></html>'
+	
+	SET @Html = @Html1_Title + @Html1 + @HtmlFillerTable + @Html2_Title + @Html2 + @HtmlFillerTable + @Html3_Title + @Html3 + @HtmlFillerTable + @Html4_Title + ISNULL(@Html4, @Html5_Title)
+
+	
+							SELECT @p_recipients= info_value
+							FROM [tb_info] 
+							WHERE [Info_Key]=@ToEmail
+							SET @p_recipients = ISNULL(@p_recipients, @Toemail)
+							Select @ToEmail, @p_recipients
+	
+IF @SendMail=1
+			BEGIN
+							DECLARE @p_subject AS VARCHAR(500)=@P_SERVERNAME +' (Report) '+ '-- Overall Space information ' +  '('+ 'DBA Mail -'+' ' + CONVERT(VARCHAR, getdate(), 9) + ')'
+							
+							--SELECT @p_recipients= info_value
+							--FROM ADMIN..[tb_info] 
+							--WHERE [Info_Key]=@ToEmail
+							
+							--Select @ToEmail, @p_recipients
+
+
+								SELECT @Profile_Name= info_value
+								FROM [tb_info] 
+								WHERE [Info_Key]= 'Current-DBA-Profile-Name'
+
+								EXEC msdb.dbo.sp_send_dbmail
+								@Profile_name=@Profile_Name,
+								@subject =@p_subject,
+								@recipients = @p_recipients,
+								@body = @Html,
+								@body_format ='HTML',
+								@importance =  'HIGH'
+
+
+
+			END
+	
+	--DELETING TEMPORARY TABLES INCLUDING ##columns of p_DBA_ConvertTableToHtml
+	IF  EXISTS (SELECT * FROM tempdb.sys.objects WHERE object_id = OBJECT_ID(N'tempdb..[#tempDriveSpace]') AND type in (N'U')) DROP TABLE [#tempDriveSpace]
+	IF  EXISTS (SELECT * FROM tempdb.sys.objects WHERE object_id = OBJECT_ID(N'tempdb..[#tempDriveSpace_Interim]') AND type in (N'U')) DROP TABLE [#tempDriveSpace_Interim]
+	IF  EXISTS (SELECT * FROM tempdb.sys.objects WHERE object_id = OBJECT_ID(N'tempdb..[#temp_DBFileSpaceInfo]') AND type in (N'U')) DROP TABLE [#temp_DBFileSpaceInfo]
+	IF  EXISTS (SELECT * FROM tempdb.sys.objects WHERE object_id = OBJECT_ID(N'tempdb..[#temp_DBFileSpaceInfo_Interim]') AND type in (N'U')) DROP TABLE [#temp_DBFileSpaceInfo_Interim]
+	IF  EXISTS (SELECT * FROM tempdb.sys.objects WHERE object_id = OBJECT_ID(N'tempdb..[#temp_DatabaseLevelInfo]') AND type in (N'U')) DROP TABLE [#temp_DatabaseLevelInfo]
+	IF  EXISTS (SELECT * FROM tempdb.sys.objects WHERE object_id = OBJECT_ID(N'tempdb..[#temp_DatabaseLevelInfo_Interim]') AND type in (N'U')) DROP TABLE [#temp_DatabaseLevelInfo_Interim]
+	IF  EXISTS (SELECT * FROM tempdb.sys.objects WHERE object_id = OBJECT_ID(N'tempdb..[#DBInfo]') AND type in (N'U')) DROP TABLE [#DBInfo]
+
+	--DROP TABLE ##columns IN p_DBA_ConvertTableToHtml
+	IF  EXISTS (SELECT * FROM tempdb.sys.objects WHERE object_id = OBJECT_ID(N'tempdb..[##columns]') AND type in (N'U')) DROP TABLE [##columns]
+	IF  EXISTS (SELECT * FROM tempdb.sys.objects WHERE object_id = OBJECT_ID(N'tempdb..##Large_Tables_final]') AND type in (N'U')) DROP TABLE [##Large_Tables_final]
+
+
+--SET NOCOUNT OFF
+END TRY
+BEGIN CATCH
+
+	EXEC p_dba_Call_SqlErrorlog @ObjectID = @@PROCID;
+	
+END CATCH
+
+
+
+GO
+
